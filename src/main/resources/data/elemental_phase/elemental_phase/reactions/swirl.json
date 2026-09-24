@@ -1,0 +1,39 @@
+{
+  "enabled": true,
+  "priority": 60,
+  "elements": ["elemental_phase:wind", "elemental_phase:fire", "elemental_phase:water", "elemental_phase:ice", "elemental_phase:lightning"],
+  "directions": [
+    {
+      "trigger": "elemental_phase:wind", "aura": "elemental_phase:fire", "minimum_scale": 0.1,
+      "consumption": {"trigger": 1.0, "aura": 0.5}, "conditions": [], "display": {"color": "#FF7A00", "show_reaction": true},
+      "actions": [
+        {"type": "area_damage", "radius": 2.5, "formula": "scale * 0.5", "damage_type": "elemental_phase:reaction", "center": "target", "include_original_target": true, "include_attacker": false, "max_targets": 64, "target_set": "swirl_hits", "falloff": "1.0", "allow_element_application": false, "allow_reactions": false},
+        {"type": "spread_element", "center": "target", "radius": 2.5, "element": "$aura", "amount": "consumed_aura * 0.5", "source_target_set": "swirl_hits", "include_original_target": false, "include_attacker": false, "max_targets": 64, "respect_attachment_cooldown": true}
+      ]
+    },
+    {
+      "trigger": "elemental_phase:wind", "aura": "elemental_phase:water", "minimum_scale": 0.1,
+      "consumption": {"trigger": 1.0, "aura": 0.5}, "conditions": [], "display": {"color": "#4FAFFF", "show_reaction": true},
+      "actions": [
+        {"type": "area_damage", "radius": 2.5, "formula": "scale * 0.5", "damage_type": "elemental_phase:reaction", "center": "target", "include_original_target": true, "include_attacker": false, "max_targets": 64, "target_set": "swirl_hits", "falloff": "1.0", "allow_element_application": false, "allow_reactions": false},
+        {"type": "spread_element", "center": "target", "radius": 2.5, "element": "$aura", "amount": "consumed_aura * 0.5", "source_target_set": "swirl_hits", "include_original_target": false, "include_attacker": false, "max_targets": 64, "respect_attachment_cooldown": true}
+      ]
+    },
+    {
+      "trigger": "elemental_phase:wind", "aura": "elemental_phase:ice", "minimum_scale": 0.1,
+      "consumption": {"trigger": 1.0, "aura": 0.5}, "conditions": [], "display": {"color": "#9DEBFF", "show_reaction": true},
+      "actions": [
+        {"type": "area_damage", "radius": 2.5, "formula": "scale * 0.5", "damage_type": "elemental_phase:reaction", "center": "target", "include_original_target": true, "include_attacker": false, "max_targets": 64, "target_set": "swirl_hits", "falloff": "1.0", "allow_element_application": false, "allow_reactions": false},
+        {"type": "spread_element", "center": "target", "radius": 2.5, "element": "$aura", "amount": "consumed_aura * 0.5", "source_target_set": "swirl_hits", "include_original_target": false, "include_attacker": false, "max_targets": 64, "respect_attachment_cooldown": true}
+      ]
+    },
+    {
+      "trigger": "elemental_phase:wind", "aura": "elemental_phase:lightning", "minimum_scale": 0.1,
+      "consumption": {"trigger": 1.0, "aura": 0.5}, "conditions": [], "display": {"color": "#B388FF", "show_reaction": true},
+      "actions": [
+        {"type": "area_damage", "radius": 2.5, "formula": "scale * 0.5", "damage_type": "elemental_phase:reaction", "center": "target", "include_original_target": true, "include_attacker": false, "max_targets": 64, "target_set": "swirl_hits", "falloff": "1.0", "allow_element_application": false, "allow_reactions": false},
+        {"type": "spread_element", "center": "target", "radius": 2.5, "element": "$aura", "amount": "consumed_aura * 0.5", "source_target_set": "swirl_hits", "include_original_target": false, "include_attacker": false, "max_targets": 64, "respect_attachment_cooldown": true}
+      ]
+    }
+  ]
+}

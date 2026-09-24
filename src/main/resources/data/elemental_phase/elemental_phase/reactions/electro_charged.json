@@ -1,0 +1,19 @@
+{
+  "enabled": true,
+  "priority": 70,
+  "elements": ["elemental_phase:water", "elemental_phase:lightning"],
+  "directions": [
+    {
+      "trigger": "elemental_phase:lightning", "aura": "elemental_phase:water", "minimum_scale": 0.1,
+      "consumption": {"trigger": 1.0, "aura": 1.0}, "conditions": [],
+      "display": {"color": "#B388FF", "show_reaction": true},
+      "actions": [{"type":"schedule_damage","id":"elemental_phase:electro_charged","target":"target","duration_ticks":100,"interval_ticks":20,"damage":{"formula":"scale * 0.75","damage_type":"elemental_phase:reaction","resistance_element":"elemental_phase:lightning","color":"#B388FF"}}]
+    },
+    {
+      "trigger": "elemental_phase:water", "aura": "elemental_phase:lightning", "minimum_scale": 0.1,
+      "consumption": {"trigger": 1.0, "aura": 1.0}, "conditions": [],
+      "display": {"color": "#B388FF", "show_reaction": true},
+      "actions": [{"type":"schedule_damage","id":"elemental_phase:electro_charged","target":"target","duration_ticks":100,"interval_ticks":20,"damage":{"formula":"scale * 0.75","damage_type":"elemental_phase:reaction","resistance_element":"elemental_phase:lightning","color":"#B388FF"}}]
+    }
+  ]
+}

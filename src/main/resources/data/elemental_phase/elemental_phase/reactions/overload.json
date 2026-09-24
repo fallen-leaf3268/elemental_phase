@@ -1,0 +1,25 @@
+{
+  "enabled": true,
+  "priority": 80,
+  "elements": ["elemental_phase:fire", "elemental_phase:lightning"],
+  "directions": [
+    {
+      "trigger": "elemental_phase:lightning", "aura": "elemental_phase:fire", "minimum_scale": 0.1,
+      "consumption": {"trigger": 1.0, "aura": 1.0}, "conditions": [],
+      "display": {"color": "#B44CFF", "show_reaction": true},
+      "actions": [
+        {"type": "area_damage", "radius": 2.5, "formula": "scale * 1.5", "damage_type": "elemental_phase:reaction", "center": "target", "include_original_target": true, "include_attacker": false, "max_targets": 64, "falloff": "1.0", "allow_element_application": false, "allow_reactions": false},
+        {"type": "knockback", "target": "target", "strength": "1.0 + min(scale, 5.0) * 0.1", "origin": "attacker"}
+      ]
+    },
+    {
+      "trigger": "elemental_phase:fire", "aura": "elemental_phase:lightning", "minimum_scale": 0.1,
+      "consumption": {"trigger": 1.0, "aura": 1.0}, "conditions": [],
+      "display": {"color": "#FF5A36", "show_reaction": true},
+      "actions": [
+        {"type": "area_damage", "radius": 2.5, "formula": "scale * 1.5", "damage_type": "elemental_phase:reaction", "center": "target", "include_original_target": true, "include_attacker": false, "max_targets": 64, "falloff": "1.0", "allow_element_application": false, "allow_reactions": false},
+        {"type": "knockback", "target": "target", "strength": "1.0 + min(scale, 5.0) * 0.1", "origin": "attacker"}
+      ]
+    }
+  ]
+}

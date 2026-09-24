@@ -1,0 +1,1 @@
+{"selector":{"type":"entity_id","id":"minecraft:magma_cube"},"permanent_elements":{"elemental_phase:fire":{"amount":8.0}},"resistances":{"elemental_phase:fire":1.0},"intrinsic_attack":{"element":"elemental_phase:fire","base_amount":1.0},"element_strength":1.0}

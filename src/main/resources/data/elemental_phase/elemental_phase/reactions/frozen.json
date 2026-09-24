@@ -1,0 +1,19 @@
+{
+  "enabled": true,
+  "priority": 90,
+  "elements": ["elemental_phase:water", "elemental_phase:ice"],
+  "directions": [
+    {
+      "trigger": "elemental_phase:ice", "aura": "elemental_phase:water", "minimum_scale": 0.1,
+      "consumption": {"trigger": 1.0, "aura": 1.0}, "conditions": [],
+      "display": {"color": "#9DEBFF", "show_reaction": true},
+      "actions": [{"type": "apply_freeze", "target": "target", "duration_ticks": 100}]
+    },
+    {
+      "trigger": "elemental_phase:water", "aura": "elemental_phase:ice", "minimum_scale": 0.1,
+      "consumption": {"trigger": 1.0, "aura": 1.0}, "conditions": [],
+      "display": {"color": "#4FAFFF", "show_reaction": true},
+      "actions": [{"type": "apply_freeze", "target": "target", "duration_ticks": 100}]
+    }
+  ]
+}
