@@ -6,22 +6,21 @@ import java.util.Optional;
 
 public sealed interface ReactionCondition permits ReactionCondition.AttackerPresent,
         ReactionCondition.AttackerEntity, ReactionCondition.TargetEntity, ReactionCondition.DamageType,
-        ReactionCondition.Source, ReactionCondition.MinimumDamage, ReactionCondition.TargetOnFire,
-        ReactionCondition.TargetInWater, ReactionCondition.TargetIsBoss {
+        ReactionCondition.MinimumDamage, ReactionCondition.TargetState {
     boolean inverted();
 
-    record AttackerPresent(boolean value, boolean inverted) implements ReactionCondition {}
+    record AttackerPresent(boolean value) implements ReactionCondition {
+        @Override public boolean inverted() { return false; }
+    }
     record AttackerEntity(Optional<ResourceLocation> entity, Optional<ResourceLocation> tag,
                           boolean inverted) implements ReactionCondition {}
     record TargetEntity(Optional<ResourceLocation> entity, Optional<ResourceLocation> tag,
                         boolean inverted) implements ReactionCondition {}
     record DamageType(Optional<ResourceLocation> damageType, Optional<ResourceLocation> tag,
                       boolean inverted) implements ReactionCondition {}
-    record Source(Kind kind, boolean inverted) implements ReactionCondition {
-        public enum Kind { MELEE, PROJECTILE, MAGIC, ENVIRONMENT }
-    }
     record MinimumDamage(double value, boolean inverted) implements ReactionCondition {}
-    record TargetOnFire(boolean value, boolean inverted) implements ReactionCondition {}
-    record TargetInWater(boolean value, boolean inverted) implements ReactionCondition {}
-    record TargetIsBoss(boolean value, boolean inverted) implements ReactionCondition {}
+    record TargetState(State state, boolean value) implements ReactionCondition {
+        public enum State { ON_FIRE, IN_WATER, FROZEN }
+        @Override public boolean inverted() { return false; }
+    }
 }

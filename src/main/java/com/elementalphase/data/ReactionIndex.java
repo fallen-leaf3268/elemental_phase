@@ -22,7 +22,7 @@ public final class ReactionIndex {
         reactions.values().forEach(reaction -> reaction.directions().forEach(direction ->
                 result.computeIfAbsent(new ReactionDirectionKey(direction.trigger(), direction.aura()), ignored -> new ArrayList<>())
                         .add(new Candidate(reaction, direction))));
-        Comparator<Candidate> ordering = Comparator.comparingInt((Candidate value) -> value.direction().priority()).reversed()
+        Comparator<Candidate> ordering = Comparator.comparingInt((Candidate value) -> value.reaction().priority()).reversed()
                 .thenComparing(value -> value.reaction().id().toString())
                 .thenComparing(value -> value.direction().trigger().toString())
                 .thenComparing(value -> value.direction().aura().toString());

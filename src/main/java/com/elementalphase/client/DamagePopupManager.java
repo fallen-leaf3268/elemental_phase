@@ -3,6 +3,8 @@ package com.elementalphase.client;
 import com.elementalphase.network.DamagePopupPacket;
 import com.elementalphase.config.ElementalPhaseClientConfig;
 import net.minecraft.network.chat.Component;
+import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayDeque;
 import java.util.Deque;
@@ -31,8 +33,10 @@ public final class DamagePopupManager {
         this.maxPopups = maxPopups;
     }
 
-    public synchronized void add(DamagePopupPacket packet, Component text, int textWidth, double now) {
-        if (packet == null || !packet.isValid() || text == null || textWidth < 0 || !Double.isFinite(now)) {
+    public synchronized void add(DamagePopupPacket packet, Component text, int textWidth, double now,
+                                 AABB bounds, double heightRatio) {
+        if (packet == null || !packet.shouldDisplay() || text == null || textWidth < 0 || !Double.isFinite(now)
+                || bounds == null || !Double.isFinite(heightRatio)) {
             return;
         }
         int maximum = Math.max(0, Math.min(MAX_POPUPS, maxPopups.getAsInt()));
@@ -43,9 +47,13 @@ public final class DamagePopupManager {
         while (popups.size() >= maximum) {
             popups.removeFirst();
         }
-        int lane = (int) Math.floorMod(sequence++, LANE_HORIZONTAL_OFFSETS_PIXELS.length);
-        popups.addLast(new Popup(packet, text, textWidth, now, LANE_HORIZONTAL_OFFSETS_PIXELS[lane],
-                (lane % 3) * LANE_VERTICAL_OFFSET_PIXELS));
+        Vec3 center = bounds.getCenter();
+        AABB savedBounds = bounds.move(packet.x() - center.x(), packet.y() - center.y(), packet.z() - center.z());
+        Vec3 anchor = new Vec3(packet.x(), DamagePopupPlacement.anchorY(savedBounds, heightRatio), packet.z());
+        long id = sequence++;
+        int lane = (int) Math.floorMod(id, LANE_HORIZONTAL_OFFSETS_PIXELS.length);
+        popups.addLast(new Popup(id, packet, text, textWidth, now, LANE_HORIZONTAL_OFFSETS_PIXELS[lane],
+                (lane % 3) * LANE_VERTICAL_OFFSET_PIXELS, anchor, savedBounds));
     }
 
     public synchronized boolean forEachActive(double now, ActivePopupVisitor visitor) {
@@ -99,10 +107,10 @@ public final class DamagePopupManager {
 
     @FunctionalInterface
     public interface ActivePopupVisitor {
-        void visit(Popup popup, double y, double sideOffset, int alpha);
+        void visit(Popup popup, double offsetX, double offsetY, int alpha);
     }
 
-    public record Popup(DamagePopupPacket packet, Component text, int textWidth, double createdAt,
-                        double horizontalOffset, double verticalOffset) {
+    public record Popup(long id, DamagePopupPacket packet, Component text, int textWidth, double createdAt,
+                        double horizontalOffset, double verticalOffset, Vec3 anchor, AABB bounds) {
     }
 }

@@ -53,10 +53,11 @@ public final class ElementDataRuntimeValidator {
         }
         ElementDataSnapshot source = report.snapshot();
         return new ElementDataParser.ParseReport(new ElementDataSnapshot(elements, reactions,
-                ReactionIndex.build(reactions), source.entityProfiles(), source.attackSources()), errors);
+                ReactionIndex.build(reactions), source.entityProfiles()), errors);
     }
 
     private static String validateStateDamage(ReactionAction.StateDamage damage,
+                                              ResourceLocation trigger, ResourceLocation aura,
                                               Map<ResourceLocation, ElementDefinition> elements,
                                               Predicate<ResourceLocation> knownDamageTypes,
                                               boolean checkDamageTypes) {
@@ -65,12 +66,7 @@ public final class ElementDataRuntimeValidator {
             return "Unknown damage type " + damage.damageType();
         }
         if (damage.resistanceElement().isEmpty()) return null;
-        ReactionAction.ElementReference reference = damage.resistanceElement().orElseThrow();
-        if (reference.kind() != ReactionAction.ElementReference.Kind.FIXED
-                || !elements.containsKey(reference.fixed())) {
-            return "Unknown resistance element " + reference.fixed();
-        }
-        return null;
+        return validateReactionApplication(damage.resistanceElement().orElseThrow(), trigger, aura, elements);
     }
 
     private static String validateReaction(ReactionSpec reaction,
@@ -90,20 +86,34 @@ public final class ElementDataRuntimeValidator {
                 }
             }
             for (ReactionAction action : direction.actions()) {
-                if (action instanceof ReactionAction.AttachElement attach) {
-                    var element = elements.get(attach.element());
-                    if (element == null || !element.enabled()) return "Unknown element " + attach.element();
-                    if (!element.application().fromReaction()) {
-                        return "Element cannot be created by a reaction " + attach.element();
-                    }
-                }
-                if (action instanceof ReactionAction.SpreadElement spread) {
-                    String invalid = validateReactionApplication(spread.element(), direction.trigger(), direction.aura(), elements);
+                if (action instanceof ReactionAction.AdditionalDamage damage && damage.settings().resistanceElement().isPresent()) {
+                    String invalid = validateReactionApplication(damage.settings().resistanceElement().orElseThrow(),
+                            direction.trigger(), direction.aura(), elements);
                     if (invalid != null) return invalid;
                 }
-                if (action instanceof ReactionAction.ModifyElement modify
-                        && (modify.operation() == ReactionAction.ElementOperation.ADD
-                        || modify.operation() == ReactionAction.ElementOperation.SET)) {
+                if (action instanceof ReactionAction.AttachElement attach) {
+                    var element = elements.get(attach.element());
+                    if (element == null) return "Unknown element " + attach.element();
+                }
+                if (action instanceof ReactionAction.Area area) {
+                    if (area.damage().isPresent()) {
+                        var damage = area.damage().orElseThrow();
+                        if (checkDamageTypes && !knownDamageTypes.test(damage.settings().damageType())) {
+                            return "Unknown damage type " + damage.settings().damageType();
+                        }
+                        if (damage.settings().resistanceElement().isPresent()) {
+                            String invalid = validateReactionApplication(damage.settings().resistanceElement().orElseThrow(),
+                                    direction.trigger(), direction.aura(), elements);
+                            if (invalid != null) return invalid;
+                        }
+                    }
+                    if (area.attachment().isPresent()) {
+                        String invalid = validateReactionApplication(area.attachment().orElseThrow().element(),
+                                direction.trigger(), direction.aura(), elements);
+                        if (invalid != null) return invalid;
+                    }
+                }
+                if (action instanceof ReactionAction.ModifyElement modify) {
                     String invalid = validateReactionApplication(modify.element(), direction.trigger(), direction.aura(), elements);
                     if (invalid != null) return invalid;
                 }
@@ -112,7 +122,7 @@ public final class ElementDataRuntimeValidator {
                     return "Unknown mob effect " + effect.effect();
                 }
                 if (action instanceof ReactionAction.ScheduleDamage scheduled) {
-                    String invalid = validateStateDamage(scheduled.damage(), elements,
+                    String invalid = validateStateDamage(scheduled.damage(), direction.trigger(), direction.aura(), elements,
                             knownDamageTypes, checkDamageTypes);
                     if (invalid != null) return invalid;
                 }
@@ -127,20 +137,13 @@ public final class ElementDataRuntimeValidator {
     private static String validateReactionApplication(ReactionAction.ElementReference reference,
                                                       ResourceLocation trigger, ResourceLocation aura,
                                                       Map<ResourceLocation, ElementDefinition> elements) {
-        ResourceLocation id = switch (reference.kind()) {
-            case TRIGGER -> trigger;
-            case AURA -> aura;
-            case FIXED -> reference.fixed();
-        };
+        ResourceLocation id = reference.resolve(trigger, aura);
         ElementDefinition element = elements.get(id);
-        if (element == null || !element.enabled()) return "Unknown element " + id;
-        return element.application().fromReaction()
-                ? null : "Element cannot be created by a reaction " + id;
+        return element == null ? "Unknown element " + id : null;
     }
 
     private static ResourceLocation damageType(ReactionAction action) {
         if (action instanceof ReactionAction.AdditionalDamage damage) return damage.settings().damageType();
-        if (action instanceof ReactionAction.AreaDamage damage) return damage.settings().damageType();
         if (action instanceof ReactionAction.ScheduleDamage damage) return damage.damage().damageType();
         return null;
     }

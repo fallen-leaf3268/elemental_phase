@@ -13,14 +13,15 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import com.elementalphase.data.model.ElementDefinition;
+import com.elementalphase.combat.ResistancePolicy;
 
 public final class ElementalState {
     private static final double EPSILON = 0.000001D;
 
     private final Map<ResourceLocation, ElementRuntimeState> states = new HashMap<>();
     private final Map<ResourceLocation, Double> resistances = new HashMap<>();
+    private final Map<ResourceLocation, Double> reactionResistances = new HashMap<>();
     private final Map<ResourceLocation, VirtualCooldown> virtualCooldowns = new HashMap<>();
-    private final Map<ApplicationCooldownKey, Long> applicationCooldowns = new HashMap<>();
     private long nextOrder;
     private IntrinsicAttack intrinsicAttack;
     private boolean initialized;
@@ -28,6 +29,26 @@ public final class ElementalState {
 
     public ElementRuntimeState state(ResourceLocation id) {
         return states.get(id);
+    }
+
+    public ElementRuntimeState.ApplyResult applyElement(ElementDefinition definition, double amount, long now,
+                                                        int duration, boolean respectCooldown,
+                                                        ElementSourceSnapshot source) {
+        if (definition == null || !Double.isFinite(amount) || amount < EPSILON || duration < 1) {
+            return ElementRuntimeState.ApplyResult.INVALID_INPUT;
+        }
+        var attachment = definition.attachment();
+        double accepted = Math.min(amount, attachment.maxAmount());
+        int acceptedDuration = attachment.limitDuration(duration);
+        ElementRuntimeState.ApplyResult result = respectCooldown
+                ? applyTemporary(definition.id(), accepted, now, acceptedDuration, attachment.cooldownTicks(), source)
+                : applyTemporaryIgnoringCooldown(definition.id(), accepted, now, acceptedDuration, source);
+        if (result.changed()) states.get(definition.id()).setVirtual(attachment.virtual());
+        return result;
+    }
+
+    public void clearVirtualElements() {
+        states.entrySet().removeIf(entry -> entry.getValue().virtual());
     }
 
     public ElementRuntimeState.ApplyResult applyTemporary(ResourceLocation id, double amount, long now, int duration, int cooldown) {
@@ -79,36 +100,6 @@ public final class ElementalState {
     public ElementRuntimeState.ApplyResult applyReactionElement(ResourceLocation id, double amount, long now,
                                                                 int duration, ElementSourceSnapshot source) {
         return applyTemporaryIgnoringCooldown(id, amount, now, duration, source);
-    }
-
-    public boolean tryApplicationCooldown(ApplicationCooldownKey key, long now, int ticks) {
-        if (key == null || ticks < 0) {
-            return false;
-        }
-        if (!applicationCooldownReady(key, now)) {
-            return false;
-        }
-        startApplicationCooldown(key, now, ticks);
-        return true;
-    }
-
-    public boolean applicationCooldownReady(ApplicationCooldownKey key, long now) {
-        if (key == null) {
-            return false;
-        }
-        Long until = applicationCooldowns.get(key);
-        return until == null || now >= until;
-    }
-
-    public void startApplicationCooldown(ApplicationCooldownKey key, long now, int ticks) {
-        if (key == null || ticks < 0) {
-            throw new IllegalArgumentException("Invalid application cooldown");
-        }
-        if (ticks == 0) {
-            applicationCooldowns.remove(key);
-        } else {
-            applicationCooldowns.put(key, deadline(now, ticks));
-        }
     }
 
     public ElementRuntimeState.ApplyResult tryTriggerVirtual(ResourceLocation id, double amount, long now, int cooldown) {
@@ -173,6 +164,7 @@ public final class ElementalState {
     public List<AuraHandle> auraHandles(long now, Map<ResourceLocation, ElementDefinition> definitions) {
         List<AuraHandle> handles = new ArrayList<>();
         for (ResourceLocation id : orderedActiveElements(now)) {
+            if (!definitions.isEmpty() && !definitions.containsKey(id)) continue;
             ElementRuntimeState runtime = states.get(id);
             handles.add(new AuraHandle() {
                 @Override
@@ -206,6 +198,26 @@ public final class ElementalState {
         return resistances.getOrDefault(id, 0.0D);
     }
 
+    public double reactionResistance(ResourceLocation id) {
+        return reactionResistances.getOrDefault(id, 0.0D);
+    }
+
+    public Map<ResourceLocation, Double> reactionResistances() {
+        return Map.copyOf(reactionResistances);
+    }
+
+    public void setReactionResistance(ResourceLocation id, double value) {
+        if (id == null || !ResistancePolicy.isValid(value)) {
+            throw new IllegalArgumentException("Invalid reaction resistance");
+        }
+        reactionResistances.put(id, value);
+    }
+
+    public void replaceReactionResistances(Map<ResourceLocation, Double> values) {
+        reactionResistances.clear();
+        values.forEach(this::setReactionResistance);
+    }
+
     public List<ResourceLocation> knownElements(long now) {
         orderedActiveElements(now);
         virtualCooldowns.entrySet().removeIf(entry -> !entry.getValue().active(now));
@@ -217,7 +229,7 @@ public final class ElementalState {
     }
 
     public void setResistance(ResourceLocation id, double value) {
-        if (id == null || !Double.isFinite(value) || value < -1.0D || value > 1.0D) {
+        if (id == null || !ResistancePolicy.isValid(value)) {
             throw new IllegalArgumentException("Invalid element resistance");
         }
         resistances.put(id, value);
@@ -245,6 +257,8 @@ public final class ElementalState {
     }
 
     public void reconcileElementLimits(Map<ResourceLocation, ElementDefinition> definitions, long now) {
+        states.entrySet().removeIf(entry -> definitions.containsKey(entry.getKey())
+                && definitions.get(entry.getKey()).attachment().virtual());
         definitions.forEach((id, definition) -> {
             ElementRuntimeState state = states.get(id);
             if (state != null) {
@@ -333,8 +347,8 @@ public final class ElementalState {
     public void clear() {
         states.clear();
         resistances.clear();
+        reactionResistances.clear();
         virtualCooldowns.clear();
-        applicationCooldowns.clear();
         nextOrder = 0L;
         intrinsicAttack = null;
         initialized = false;
@@ -362,6 +376,7 @@ public final class ElementalState {
         root.putLong("generation", appliedGeneration);
         ListTag elements = new ListTag();
         states.entrySet().stream().sorted(Map.Entry.comparingByKey(Comparator.comparing(ResourceLocation::toString)))
+                .filter(entry -> !entry.getValue().virtual())
                 .forEach(entry -> {
                     CompoundTag value = entry.getValue().serializeNBT();
                     value.putString("id", entry.getKey().toString());
@@ -376,6 +391,14 @@ public final class ElementalState {
             resistanceValues.add(entry);
         });
         root.put("resistances", resistanceValues);
+        ListTag reactionResistanceValues = new ListTag();
+        reactionResistances.forEach((id, value) -> {
+            CompoundTag entry = new CompoundTag();
+            entry.putString("id", id.toString());
+            entry.putDouble("value", value);
+            reactionResistanceValues.add(entry);
+        });
+        root.put("reaction_resistances", reactionResistanceValues);
         if (intrinsicAttack != null) {
             CompoundTag attack = new CompoundTag();
             attack.putString("element", intrinsicAttack.element().toString());
@@ -399,7 +422,14 @@ public final class ElementalState {
             CompoundTag value = resistanceValues.getCompound(i);
             ResourceLocation id = ResourceLocation.tryParse(value.getString("id"));
             double amount = value.getDouble("value");
-            if (id != null && Double.isFinite(amount) && amount >= -1.0D && amount <= 1.0D) resistances.put(id, amount);
+            if (id != null && ResistancePolicy.isValid(amount)) resistances.put(id, amount);
+        }
+        ListTag reactionResistanceValues = root.getList("reaction_resistances", Tag.TAG_COMPOUND);
+        for (int i = 0; i < reactionResistanceValues.size(); i++) {
+            CompoundTag value = reactionResistanceValues.getCompound(i);
+            ResourceLocation id = ResourceLocation.tryParse(value.getString("id"));
+            double amount = value.getDouble("value");
+            if (id != null && ResistancePolicy.isValid(amount)) reactionResistances.put(id, amount);
         }
         if (root.contains("intrinsic", Tag.TAG_COMPOUND)) {
             CompoundTag value = root.getCompound("intrinsic");

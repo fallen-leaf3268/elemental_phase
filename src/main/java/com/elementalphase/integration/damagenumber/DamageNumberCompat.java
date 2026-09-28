@@ -1,8 +1,10 @@
 package com.elementalphase.integration.damagenumber;
 
+import com.elementalphase.data.ElementDataManager;
 import com.elementalphase.display.DamageDisplayPreferenceStore;
 import com.elementalphase.display.DamagePopupText;
 import com.elementalphase.display.PendingMainDamageTracker.ReactionLabel;
+import com.elementalphase.display.PendingMainDamageTracker.Appearance;
 import com.elementalphase.reaction.ReactionOutcome;
 import com.mojang.logging.LogUtils;
 import net.minecraft.network.chat.Component;
@@ -45,11 +47,11 @@ public final class DamageNumberCompat {
         register(adapter.eventType().asSubclass(Event.class), event -> handle(adapter, event));
     }
 
-    public static void record(DamageSource source, long tick, List<ReactionLabel> labels) {
+    public static void record(DamageSource source, long tick, Appearance appearance) {
         if (adapter == null || !(source.getEntity() instanceof ServerPlayer player)) {
             return;
         }
-        REACTIONS.record(source, player.getUUID(), tick, labels);
+        REACTIONS.record(source, player.getUUID(), tick, appearance);
     }
 
     public static void clearBefore(long tick) {
@@ -64,22 +66,28 @@ public final class DamageNumberCompat {
         return new ReactionLabel(reaction.id(), reaction.displayColor());
     }
 
+    public static Appearance appearance(ReactionOutcome.TriggeredReaction reaction) {
+        return new Appearance(reaction.displayColor(), reaction.showName() ? List.of(label(reaction)) : List.of());
+    }
+
     private static void handle(DamageNumberEventAdapter eventAdapter, Object event) {
         Object sourceValue = eventAdapter.source(event);
         Object playerValue = eventAdapter.player(event);
-        if (!(sourceValue instanceof DamageSource source) || !(playerValue instanceof ServerPlayer player)
-                || !DamageDisplayPreferenceStore.INSTANCE.showReactions(player.getUUID())) {
+        if (!(sourceValue instanceof DamageSource source) || !(playerValue instanceof ServerPlayer player)) {
             return;
         }
         long tick = player.getServer().getTickCount();
         REACTIONS.consume(source, player.getUUID(), tick)
-                .ifPresent(labels -> eventAdapter.apply(event, labels.get(0).color(), reactionComponent(labels)));
+                .ifPresent(appearance -> eventAdapter.apply(event, appearance.color(),
+                        DamageDisplayPreferenceStore.INSTANCE.showReactions(player.getUUID())
+                                ? reactionComponent(appearance.visibleLabels()) : Component.empty()));
     }
 
     static Component reactionComponent(List<ReactionLabel> labels) {
+        var reactions = ElementDataManager.snapshot().reactions();
         MutableComponent component = Component.empty();
         for (ReactionLabel label : labels) {
-            component.append(" ").append(Component.translatable(DamagePopupText.translationKey(label.id()))
+            component.append(" ").append(Component.translatable(DamagePopupText.translationKey(label.id(), reactions))
                     .withStyle(style -> style.withColor(label.color())));
         }
         return component;

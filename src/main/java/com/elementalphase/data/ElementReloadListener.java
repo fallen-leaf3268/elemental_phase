@@ -27,7 +27,7 @@ public final class ElementReloadListener extends SimplePreparableReloadListener<
     @Override
     protected ElementDataParser.ParseReport prepare(ResourceManager resourceManager, ProfilerFiller profiler) {
         Map<ResourceLocation, JsonElement> resources = new LinkedHashMap<>();
-        for (String category : new String[]{"elements", "reactions", "entity_profiles", "attack_sources"}) {
+        for (String category : new String[]{"elements", "reactions", "entity_profiles"}) {
             for (Map.Entry<ResourceLocation, Resource> entry : resourceManager
                     .listResources(ROOT + category, id -> id.getPath().endsWith(".json")).entrySet()) {
                 resources.put(entry.getKey(), read(entry.getValue()));

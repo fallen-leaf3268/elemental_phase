@@ -18,6 +18,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Comparator;
 import com.elementalphase.reaction.formula.ReactionFormulaContext;
+import com.elementalphase.combat.ResistancePolicy;
 
 public final class ReactionEngine {
     private static final double EPSILON = 0.000001D;
@@ -41,16 +42,16 @@ public final class ReactionEngine {
                 if (aura.element().equals(request.trigger()) || aura.amount() < EPSILON) continue;
                 for (ReactionIndex.Candidate candidate : request.index().candidates(request.trigger(), aura.element())) {
                     if (conditionsPass(candidate, request)) {
-                        double scale = scale(remainingTrigger, aura.amount(), candidate.direction().consumption().trigger(),
+                        Consumption consumption = calculateConsumption(remainingTrigger, aura.amount(), candidate.direction().consumption().trigger(),
                                 candidate.direction().consumption().aura());
-                        if (scale >= Math.max(GLOBAL_MINIMUM_SCALE, candidate.direction().minimumScale())) {
-                            candidates.add(new DirectionalCandidate(candidate, aura, scale));
+                        if (consumption.scale() >= Math.max(GLOBAL_MINIMUM_SCALE, candidate.direction().minimumScale())) {
+                            candidates.add(new DirectionalCandidate(candidate, aura, consumption));
                         }
                     }
                 }
             }
             candidates.sort(Comparator
-                    .comparingInt((DirectionalCandidate value) -> value.candidate().direction().priority()).reversed()
+                    .comparingInt((DirectionalCandidate value) -> value.candidate().reaction().priority()).reversed()
                     .thenComparingLong(value -> value.aura().order())
                     .thenComparing(value -> value.candidate().reaction().id().toString())
                     .thenComparing(value -> value.aura().element().toString()));
@@ -60,52 +61,78 @@ public final class ReactionEngine {
             var direction = selected.candidate().direction();
             double triggerBefore = remainingTrigger;
             double auraBefore = selected.aura().amount();
-            double consumedTrigger = selected.scale() * direction.consumption().trigger();
-            double consumedAura = selected.scale() * direction.consumption().aura();
+            double consumedTrigger = selected.consumption().consumedTrigger();
+            double consumedAura = selected.consumption().consumedAura();
             remainingTrigger = Math.max(0.0D, remainingTrigger - consumedTrigger);
             List<ElementPortion> triggerPortions = List.of(new ElementPortion(ElementPortion.Origin.TRIGGER_POOL,
                     consumedTrigger, request.source(), Optional.empty(), Long.MIN_VALUE));
             List<ElementPortion> auraPortions = selected.aura().consume(consumedAura);
             if (remainingTrigger >= EPSILON && remainingTrigger < GLOBAL_MINIMUM_SCALE) remainingTrigger = 0.0D;
             double auraRemaining = selected.aura().amount();
+            var auraDefinition = request.elements().get(selected.aura().element());
+            if (auraDefinition != null && auraDefinition.attachment().virtual()) {
+                request.state().remove(selected.aura().element());
+                auraRemaining = 0.0D;
+            }
+            if (request.elementDefinition().attachment().virtual()) {
+                request.state().remove(request.trigger());
+                remainingTrigger = 0.0D;
+            }
             if (auraRemaining >= EPSILON && auraRemaining < GLOBAL_MINIMUM_SCALE) {
                 selected.aura().consume(auraRemaining);
                 auraRemaining = 0.0D;
             }
 
             ReactionFacts facts = new ReactionFacts(selected.candidate().reaction().id(), direction,
-                    request.originalDamage(), currentDamage, triggerBefore, auraBefore, selected.scale(),
+                    request.originalDamage(), currentDamage, triggerBefore, auraBefore, selected.consumption().scale(),
                     consumedTrigger, consumedAura, remainingTrigger, auraRemaining,
                     request.attackerLevel(), request.elementStrength(), request.targetHealth(),
                     request.targetMaxHealth(), request.targetResistance(), request.source(), triggerPortions, auraPortions);
-            labels.add(new ReactionPlan.Label(facts.reactionId(), facts.scale(), direction.display().color(),
-                    direction.display().showReaction(), facts));
             for (ReactionAction action : direction.actions()) {
                 ReactionFormulaContext context = formulaContext(facts, currentDamage);
                 if (action instanceof ReactionAction.MainDamageBonus bonus) {
+                    if (!request.hasOriginalHit()) continue;
                     double when = action.when().evaluate(context);
                     if (!Double.isFinite(when) || when == 0.0D) continue;
                     double value = bonus.formula().evaluate(context);
-                    if (Double.isFinite(value) && value > 0.0D) currentDamage = clampDamage(currentDamage + value);
+                    if (Double.isFinite(value) && value > 0.0D) {
+                        currentDamage = clampDamage(currentDamage + ResistancePolicy.apply(value,
+                                request.state().reactionResistance(facts.reactionId())));
+                    }
                 } else {
-                    pendingActions.add(new PendingAction(action, facts));
+                    Optional<ReactionAction.StateSnapshot> snapshot = Optional.empty();
+                    if (action instanceof ReactionAction.ScheduleDamage scheduled) {
+                        var chosen = scheduled.damage().resistanceElement()
+                                .map(reference -> reference.resolve(direction.trigger(), direction.aura()));
+                        double resistance = chosen.map(request.state()::resistance).orElse(0.0D);
+                        snapshot = Optional.of(captureStateSnapshot(facts, chosen, resistance,
+                                request.state().reactionResistance(facts.reactionId()),
+                                direction.display().color().resolve(direction.trigger(), direction.aura(), request.elements()),
+                                direction.display().showReaction()));
+                    }
+                    pendingActions.add(new PendingAction(action, facts, snapshot));
                 }
             }
+            labels.add(new ReactionPlan.Label(facts.reactionId(), facts.scale(), direction.display().color()
+                    .resolve(direction.trigger(), direction.aura(), request.elements()),
+                    direction.display().showReaction(), facts, currentDamage > facts.damageBeforeReaction()));
             reacted = true;
         }
 
+        double finalCurrentDamage = currentDamage;
         for (PendingAction pending : pendingActions) {
             ReactionFacts facts = withCurrentDamage(pending.facts(), currentDamage);
             double when = pending.action().when().evaluate(formulaContext(facts, currentDamage));
             if (Double.isFinite(when) && when != 0.0D) {
-                actions.add(new ReactionPlan.PlannedAction(pending.action(), facts));
+                actions.add(new ReactionPlan.PlannedAction(pending.action(), facts,
+                        pending.stateSnapshot().map(snapshot -> snapshot.withCurrentDamage(finalCurrentDamage))));
             }
         }
 
         ElementRuntimeState.ApplyResult applyResult = ElementRuntimeState.ApplyResult.APPLIED;
-        if (request.elementDefinition().attachment().retainAfterAttack() && remainingTrigger >= EPSILON) {
-            applyResult = request.state().applyTemporaryIgnoringCooldown(request.trigger(), remainingTrigger,
-                    request.gameTime(), request.elementDefinition().attachment().durationTicks(),
+        if (remainingTrigger >= EPSILON) {
+            applyResult = request.state().applyElement(request.elementDefinition(), remainingTrigger,
+                    request.gameTime(), request.elementDefinition().attachment().durationTicks(), false,
                     request.source().orElse(null));
             if (reacted && !applyResult.changed()) applyResult = ElementRuntimeState.ApplyResult.APPLIED;
         }
@@ -126,6 +153,17 @@ public final class ReactionEngine {
                 ratio, facts.targetResistance(), 0.0D, 0.0D);
     }
 
+    static ReactionAction.StateSnapshot captureStateSnapshot(ReactionFacts facts, Optional<ResourceLocation> chosenElement,
+                                                              double elementResistance, double reactionResistance,
+                                                              int color, boolean showName) {
+        double ratio = facts.targetMaxHealth() > 0 ? facts.targetHealth() / facts.targetMaxHealth() : 0;
+        var context = new ReactionFormulaContext(facts.originalDamage(), facts.damageBeforeReaction(), facts.scale(),
+                facts.triggerAmount(), facts.auraAmount(), facts.consumedTrigger(), facts.consumedAura(), facts.remainingTrigger(),
+                facts.remainingAura(), facts.attackerLevel(), facts.elementStrength(), facts.targetHealth(), facts.targetMaxHealth(),
+                ratio, elementResistance, 0, 0);
+        return new ReactionAction.StateSnapshot(context, chosenElement, elementResistance, reactionResistance, color, showName);
+    }
+
     private static ReactionFacts withCurrentDamage(ReactionFacts facts, double currentDamage) {
         return new ReactionFacts(facts.reactionId(), facts.direction(), facts.originalDamage(), currentDamage,
                 facts.triggerAmount(), facts.auraAmount(), facts.scale(), facts.consumedTrigger(), facts.consumedAura(),
@@ -138,10 +176,10 @@ public final class ReactionEngine {
         return Double.isFinite(value) ? Math.min(MAX_DAMAGE, Math.max(0.0D, value)) : 0.0D;
     }
 
-    private record DirectionalCandidate(ReactionIndex.Candidate candidate, AuraHandle aura, double scale) {
+    private record DirectionalCandidate(ReactionIndex.Candidate candidate, AuraHandle aura, Consumption consumption) {
     }
 
-    private record PendingAction(ReactionAction action, ReactionFacts facts) {
+    private record PendingAction(ReactionAction action, ReactionFacts facts, Optional<ReactionAction.StateSnapshot> stateSnapshot) {
     }
 
     public ReactionOutcome react(ElementalState state, ResourceLocation incoming, long now,
@@ -197,13 +235,14 @@ public final class ReactionEngine {
             if (!validRatio(incomingRatio) || !validRatio(existingRatio)) {
                 continue;
             }
-            double scale = scale(incomingAmount, existingAmount, incomingRatio, existingRatio);
+            Consumption consumption = calculateConsumption(incomingAmount, existingAmount, incomingRatio, existingRatio);
+            double scale = consumption.scale();
             if (scale < Math.max(GLOBAL_MINIMUM_SCALE, definition.minimumScale())) {
                 continue;
             }
 
-            incomingPool.consume(scale * incomingRatio);
-            existingState.consume(scale * existingRatio, now);
+            incomingPool.consume(consumption.consumedTrigger());
+            existingState.consume(consumption.consumedAura(), now);
             incomingPool.clearRemainderBelow(GLOBAL_MINIMUM_SCALE);
             clearRemainderBelow(existingState, now, GLOBAL_MINIMUM_SCALE);
             ReactionDamageDefinition damageDefinition = definition.damage();
@@ -218,7 +257,7 @@ public final class ReactionEngine {
                     new ReactionOutcome.TriggeredArea(
                             definitionArea.radius(),
                             definitionArea.spreadElement(),
-                            scale * ratioFor(definition, definitionArea.spreadElement())
+                            (definitionArea.spreadElement().equals(incoming) ? consumption.consumedTrigger() : consumption.consumedAura())
                                     * definitionArea.attachmentRatio(),
                             definitionArea.attachAttacker()));
             triggered.add(new ReactionOutcome.TriggeredReaction(
@@ -298,10 +337,19 @@ public final class ReactionEngine {
     }
 
     public static double scale(double amountA, double amountB, double ratioA, double ratioB) {
-        if (!Double.isFinite(amountA) || !Double.isFinite(amountB) || !validRatio(ratioA) || !validRatio(ratioB)) {
-            return 0.0D;
-        }
-        return Math.max(0.0D, Math.min(amountA / ratioA, amountB / ratioB));
+        return calculateConsumption(amountA, amountB, ratioA, ratioB).scale();
+    }
+
+    public record Consumption(double consumedTrigger, double consumedAura, double scale) {}
+
+    public static Consumption calculateConsumption(double amountA, double amountB, double ratioA, double ratioB) {
+        if (!Double.isFinite(amountA) || !Double.isFinite(amountB) || amountA <= 0 || amountB <= 0
+                || !validRatio(ratioA) || !validRatio(ratioB)) return new Consumption(0, 0, 0);
+        double divisor = Math.max(ratioA, ratioB);
+        double unitA = ratioA / divisor, unitB = ratioB / divisor;
+        double q = Math.min(amountA / unitA, amountB / unitB);
+        double consumedA = Math.min(amountA, q * unitA), consumedB = Math.min(amountB, q * unitB);
+        return new Consumption(consumedA, consumedB, Math.min(consumedA, consumedB));
     }
 
     private static double ratioFor(ReactionDefinition definition, ResourceLocation element) {
@@ -315,6 +363,6 @@ public final class ReactionEngine {
     }
 
     private static boolean validRatio(double value) {
-        return Double.isFinite(value) && value >= EPSILON;
+        return Double.isFinite(value) && value > 0 && value <= MAX_DAMAGE;
     }
 }

@@ -16,9 +16,7 @@ class ElementDefinitionParsingTest {
     void parsesDefaultGroupedDefinition() {
         ElementDefinition value = parse("{}");
 
-        assertTrue(value.application().fromAttack());
-        assertTrue(value.application().fromReaction());
-        assertTrue(value.attachment().retainAfterAttack());
+        assertFalse(value.attachment().virtual());
         assertEquals(2, value.attachment().cooldownTicks());
         assertEquals(100, value.attachment().durationTicks());
         assertEquals(1_000_000.0D, value.attachment().maxAmount());
@@ -33,8 +31,7 @@ class ElementDefinitionParsingTest {
     void parsesCompleteGroupedDefinition() {
         ElementDefinition value = parse("""
                 {
-                  "application":{"from_attack":false,"from_reaction":false},
-                  "attachment":{"retain_after_attack":false,"cooldown_ticks":0,
+                  "attachment":{"mode":"virtual","cooldown_ticks":0,
                     "duration_ticks":2147483647,"max_amount":25.5},
                   "display":{"translation_key":"element.example.steam","color":"#4fafff",
                     "visible_in_jade":false,"order":-20,
@@ -42,9 +39,7 @@ class ElementDefinitionParsingTest {
                 }
                 """);
 
-        assertFalse(value.application().fromAttack());
-        assertFalse(value.application().fromReaction());
-        assertFalse(value.attachment().retainAfterAttack());
+        assertTrue(value.attachment().virtual());
         assertEquals(0, value.attachment().cooldownTicks());
         assertEquals(Integer.MAX_VALUE, value.attachment().durationTicks());
         assertEquals(25.5D, value.attachment().maxAmount());
@@ -57,15 +52,17 @@ class ElementDefinitionParsingTest {
     }
 
     @Test
-    void disablesElementWithoutError() {
-        var report = parseReport("{\"enabled\":false}");
+    void blankOverrideDoesNotLoadAnElement() {
+        var report = parseReport("");
 
-        assertTrue(report.errors().isEmpty(), report.errors().toString());
+        assertFalse(report.errors().isEmpty());
         assertTrue(report.snapshot().elements().isEmpty());
     }
 
     @Test
     void rejectsLegacyAndUnknownFields() {
+        assertRejected("{\"enabled\":false}");
+        assertRejected("{\"attachment\":{\"retain_after_attack\":true}}");
         assertRejected("{\"attachable\":true}");
         assertRejected("{\"mount_cooldown_ticks\":2}");
         assertRejected("{\"temporary_duration_ticks\":100}");
@@ -79,7 +76,7 @@ class ElementDefinitionParsingTest {
 
     @Test
     void rejectsInvalidValues() {
-        assertRejected("{\"application\":{\"from_attack\":1}}");
+        assertRejected("{\"attachment\":{\"mode\":\"instant\"}}");
         assertRejected("{\"attachment\":{\"cooldown_ticks\":-1}}");
         assertRejected("{\"attachment\":{\"duration_ticks\":0}}");
         assertRejected("{\"attachment\":{\"max_amount\":0.09}}");
@@ -88,6 +85,16 @@ class ElementDefinitionParsingTest {
         assertRejected("{\"display\":{\"color\":\"blue\"}}");
         assertRejected("{\"display\":{\"color\":\"#12345\"}}");
         assertRejected("{\"display\":{\"icon\":\"Invalid ID\"}}");
+    }
+
+    @Test
+    void virtualModeDefaultsToHalfASecondAndAllowsZeroCooldown() {
+        var virtual = parse("{\"attachment\":{\"mode\":\"virtual\",\"cooldown_ticks\":0}}");
+
+        assertTrue(virtual.attachment().virtual());
+        assertEquals(10, virtual.attachment().durationTicks());
+        assertEquals(0, virtual.attachment().cooldownTicks());
+        assertTrue(virtual.display().visibleInJade());
     }
 
     private static ElementDefinition parse(String json) {

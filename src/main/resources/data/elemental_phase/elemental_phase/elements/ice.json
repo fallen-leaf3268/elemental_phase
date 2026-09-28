@@ -1,1 +1,14 @@
-{"enabled":true,"application":{"from_attack":true,"from_reaction":true},"attachment":{"retain_after_attack":true,"cooldown_ticks":2,"duration_ticks":100,"max_amount":1000000.0},"display":{"translation_key":"element.elemental_phase.ice","color":"#9DEBFF","visible_in_jade":true,"order":20}}
+{
+  "attachment": {
+    "mode": "normal",
+    "cooldown_ticks": 2,
+    "duration_ticks": 100,
+    "max_amount": 1000000
+  },
+  "display": {
+    "translation_key": "element.elemental_phase.ice",
+    "color": "#9DEBFF",
+    "visible_in_jade": true,
+    "order": 20
+  }
+}

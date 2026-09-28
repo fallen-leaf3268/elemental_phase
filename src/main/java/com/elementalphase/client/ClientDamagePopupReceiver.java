@@ -17,7 +17,7 @@ public final class ClientDamagePopupReceiver {
     public static void receive(DamagePopupPacket packet) {
         Minecraft minecraft = Minecraft.getInstance();
         DamagePopupManager.INSTANCE.updateWorldToken(minecraft.level);
-        if (packet != null && minecraft.level != null && packet.isValid()
+        if (packet != null && minecraft.level != null && packet.shouldDisplay()
                 && minecraft.level.getEntity(packet.entityId()) instanceof LivingEntity entity) {
             var entityTypeId = BuiltInRegistries.ENTITY_TYPE.getKey(entity.getType());
             var visibility = DamagePopupVisibilityOptions.resolve(entityTypeId,
@@ -27,7 +27,8 @@ public final class ClientDamagePopupReceiver {
             DamagePopupText.component(packet.damage(), packet.reactionIds(), visibility.showDamage(),
                             visibility.showReactions())
                     .ifPresent(text -> DamagePopupManager.INSTANCE.add(packet, text, minecraft.font.width(text),
-                            minecraft.level.getGameTime()));
+                            minecraft.level.getGameTime(), entity.getBoundingBox(),
+                            ElementalPhaseClientConfig.HEIGHT_RATIO.get()));
         }
     }
 }

@@ -4,6 +4,11 @@ import com.elementalphase.api.ElementalPhaseApi;
 import com.elementalphase.capability.ElementalCapabilities;
 import com.elementalphase.combat.QueuedHitExecution;
 import com.elementalphase.combat.ReactionExecutionBudget;
+import com.elementalphase.combat.ResistancePolicy;
+import com.elementalphase.config.ElementalPhaseServerConfig;
+import com.elementalphase.event.CommonEvents;
+import com.elementalphase.reaction.ReactionEngine;
+import com.elementalphase.reaction.ReactionRequest;
 import com.elementalphase.data.model.ReactionAction;
 import com.elementalphase.data.model.ReactionDamageDefinition;
 import com.elementalphase.display.ReactionDamageContext;
@@ -18,9 +23,6 @@ import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
-import net.minecraft.tags.DamageTypeTags;
-import net.minecraft.tags.TagKey;
-import net.minecraft.world.damagesource.DamageType;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.entity.LivingEntity;
@@ -29,119 +31,154 @@ import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 
 public final class ReactionActionExecutor {
-    private static final double MAX_DAMAGE = 1_000_000.0D;
     private static final double MIN_AMOUNT = 0.000001D;
+    private static final org.slf4j.Logger LOGGER = com.mojang.logging.LogUtils.getLogger();
+
+    static double effectiveRadius(double computed, double configuredMax) {
+        return !Double.isFinite(computed) || computed <= 0 ? 0 : Math.min(computed, configuredMax);
+    }
+
+    static int effectiveTargetLimit(Optional<Integer> requested, int configuredMax) {
+        return Math.min(requested.orElse(configuredMax), configuredMax);
+    }
+
+    static void runAreaParts(boolean primaryTarget, Runnable damage,
+                             java.util.function.BooleanSupplier validAfterDamage, Runnable attachment) {
+        damage.run();
+        if (!primaryTarget && validAfterDamage.getAsBoolean()) attachment.run();
+    }
+
+    static <T> List<T> selectCandidates(T primary, T attacker, Iterable<T> candidates,
+            java.util.function.Predicate<T> valid, java.util.function.ToDoubleFunction<T> distanceSquared,
+            java.util.function.ToIntFunction<T> stableId, double radiusSquared, int limit,
+            boolean includeTarget, boolean includeAttacker, ReactionExecutionBudget budget) {
+        if (limit <= 0 || budget.targetOperationsRemaining() == 0) return List.of();
+        var seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<T, Boolean>());
+        var eligible = new ArrayList<T>();
+        var iterator = candidates.iterator();
+        boolean primaryPending = includeTarget && primary != null;
+        while (primaryPending || iterator.hasNext()) {
+            if (budget.targetOperationsRemaining() == 0) break;
+            T candidate;
+            if (primaryPending) {
+                candidate = primary;
+                primaryPending = false;
+            } else {
+                candidate = iterator.next();
+            }
+            if (candidate == null || candidate == primary && !includeTarget || !seen.add(candidate)
+                    || candidate == attacker && candidate != primary && !includeAttacker) continue;
+            if (budget.claimTargetOperations(1) != 1) break;
+            if (!valid.test(candidate)) continue;
+            double distance = distanceSquared.applyAsDouble(candidate);
+            if (!Double.isFinite(distance) || distance > radiusSquared) continue;
+            eligible.add(candidate);
+        }
+        eligible.sort(Comparator.<T>comparingInt(candidate -> candidate == primary ? 0 : 1)
+                .thenComparingDouble(distanceSquared).thenComparingInt(stableId));
+        return List.copyOf(eligible.subList(0, Math.min(limit, eligible.size())));
+    }
 
     public void executeOrdered(QueuedHitExecution execution, ReactionExecutionBudget budget) {
         if (execution == null || execution.target() == null || execution.target().isRemoved()) return;
-        Map<String, List<LivingEntity>> targetSets = new HashMap<>();
         for (var planned : execution.plan().actions()) {
-            execute(execution, planned.action(), planned.facts(), budget, targetSets);
+            execute(execution, planned.action(), planned.facts(), planned.stateSnapshot(), budget);
         }
     }
 
     private void execute(QueuedHitExecution execution, ReactionAction action, ReactionFacts facts,
-                         ReactionExecutionBudget budget, Map<String, List<LivingEntity>> targetSets) {
+                         Optional<ReactionAction.StateSnapshot> stateSnapshot, ReactionExecutionBudget budget) {
         if (action instanceof ReactionAction.AdditionalDamage damage) {
             double amount = damage.formula().evaluate(context(facts, execution.target(), 0.0D, 0.0D,
                     damage.settings().resistanceElement()));
             hurt(execution, execution.target(), damage.settings(), facts, amount);
-        } else if (action instanceof ReactionAction.AreaDamage area) {
-            Vec3 center = center(execution, area.center());
-            List<LivingEntity> targets = select(execution, center, area.radius(), area.includeOriginalTarget(),
-                    area.includeAttacker(), area.maxTargets(), budget);
-            List<LivingEntity> accepted = area.targetSet().isPresent() ? new ArrayList<>() : null;
+        } else if (action instanceof ReactionAction.Area area) {
+            Vec3 center = execution.target().position();
+            double computed = area.radius().evaluate(context(facts, execution.target(), 0, 0));
+            if (!Double.isFinite(computed)) {
+                LOGGER.error("Skipping non-finite area radius for reaction {}", facts.reactionId());
+                return;
+            }
+            double radius = effectiveRadius(computed, ElementalPhaseServerConfig.MAX_RADIUS.get());
+            if (radius <= 0) return;
+            int limit = effectiveTargetLimit(area.maxTargets(), ElementalPhaseServerConfig.MAX_TARGETS.get());
+            boolean includeTarget = area.damage().map(ReactionAction.AreaDamageValue::includeTarget).orElse(false);
+            List<LivingEntity> targets = select(execution, center, radius, includeTarget, area.includeAttacker(), limit, budget);
             for (LivingEntity target : targets) {
                 double distance = Math.sqrt(target.position().distanceToSqr(center));
-                ReactionFormulaContext context = context(facts, target, distance, area.radius(),
-                        area.settings().resistanceElement());
-                double falloff = area.falloff().evaluate(context);
-                double amount = area.formula().evaluate(context) * finiteNonNegative(falloff);
-                boolean hurtAccepted = hurt(execution, target, area.settings(), facts, amount);
-                if (hurtAccepted && accepted != null) accepted.add(target);
+                runAreaParts(target == execution.target(), () -> area.damage().ifPresent(damage -> {
+                    double amount = damage.formula().evaluate(context(facts, target, distance, radius,
+                            damage.settings().resistanceElement()));
+                    hurt(execution, target, damage.settings(), facts, amount);
+                }), () -> valid(target, execution.level()), () -> area.attachment().ifPresent(attachment -> {
+                    double amount = attachment.amount().evaluate(context(facts, target, distance, radius));
+                    applyExplicitAttachment(execution, target, resolve(attachment.element(), facts), amount, facts, budget);
+                }));
             }
-            if (accepted != null) area.targetSet().ifPresent(name -> targetSets.put(name, List.copyOf(accepted)));
         } else if (action instanceof ReactionAction.MobEffect effect) {
-            LivingEntity target = target(execution, effect.target());
+            LivingEntity target = execution.target();
             var type = BuiltInRegistries.MOB_EFFECT.get(effect.effect());
             if (valid(target, execution.level()) && type != null) {
-                target.addEffect(new MobEffectInstance(type, effect.durationTicks(), effect.amplifier(),
-                        effect.ambient(), effect.visible()));
+                target.addEffect(new MobEffectInstance(type, effect.durationTicks(), effect.level(), false, true, true));
             }
-        } else if (action instanceof ReactionAction.Ignite ignite) {
-            LivingEntity target = target(execution, ignite.target());
-            if (valid(target, execution.level()) && !target.fireImmune()) {
-                target.setRemainingFireTicks(addTicks(target.getRemainingFireTicks(), ignite.durationTicks()));
-            }
-        } else if (action instanceof ReactionAction.ApplyFreeze freeze) {
-            LivingEntity target = target(execution, freeze.target());
+        } else if (action instanceof ReactionAction.Special special) {
+            LivingEntity target = execution.target();
             if (valid(target, execution.level())) {
-                ReactionRuntimeController.INSTANCE.applyFreeze(execution.level(), target,
-                        freeze.durationTicks(), execution.level().getGameTime());
+                for (var entry : special.entries()) {
+                    if (entry.type() == ReactionAction.SpecialEntry.Kind.IGNITE) {
+                        if (!target.fireImmune() && entry.durationTicks() >= Math.max(0, target.getRemainingFireTicks())) {
+                            target.setRemainingFireTicks(entry.durationTicks());
+                        }
+                    } else {
+                        ReactionRuntimeController.INSTANCE.applyFreeze(execution.level(), target,
+                                entry.durationTicks(), execution.level().getGameTime());
+                    }
+                }
             }
         } else if (action instanceof ReactionAction.ScheduleDamage scheduled) {
-            LivingEntity target = target(execution, scheduled.target());
-            if (valid(target, execution.level())) {
+            LivingEntity target = execution.target();
+            if (valid(target, execution.level()) && stateSnapshot.isPresent()) {
                 ReactionRuntimeController.INSTANCE.scheduleDamage(execution.level(), target, scheduled.id(),
                         facts.reactionId(), facts.scale(), scheduled.durationTicks(), scheduled.intervalTicks(),
-                        scheduled.damage(), reactionActionSource(execution, facts), execution.level().getGameTime());
-            }
-        } else if (action instanceof ReactionAction.Knockback knockback) {
-            LivingEntity target = target(execution, knockback.target());
-            LivingEntity origin = switch (knockback.origin()) {
-                case ATTACKER -> execution.attacker();
-                case TARGET, REACTION -> execution.target();
-            };
-            if (valid(target, execution.level()) && origin != null && origin != target) {
-                double strength = finiteNonNegative(knockback.strength().evaluate(context(facts, target, 0, 0)));
-                double x = origin.getX() - target.getX();
-                double z = origin.getZ() - target.getZ();
-                if (x * x + z * z >= 1.0E-12D) target.knockback(strength, x, z);
+                        scheduled.damage(), reactionActionSource(execution, facts), stateSnapshot.orElseThrow(),
+                        execution.level().getGameTime());
             }
         } else if (action instanceof ReactionAction.ModifyElement modify) {
             LivingEntity target = target(execution, modify.target());
             if (valid(target, execution.level())) modifyElement(execution, target, modify, facts);
-        } else if (action instanceof ReactionAction.SpreadElement spread) {
-            Vec3 center = center(execution, spread.center());
-            List<LivingEntity> targets = spread.sourceTargetSet().map(targetSets::get).orElse(null);
-            if (targets == null) {
-                targets = select(execution, center, spread.radius(), spread.includeOriginalTarget(),
-                        spread.includeAttacker(), spread.maxTargets(), budget);
-            } else {
-                targets = reuse(execution, targets, spread.includeOriginalTarget(), spread.includeAttacker(),
-                        spread.maxTargets(), budget);
-            }
-            ResourceLocation element = resolve(spread.element(), facts);
-            for (LivingEntity target : targets) {
-                double distance = Math.sqrt(target.position().distanceToSqr(center));
-                double amount = spread.amount().evaluate(context(facts, target, distance, spread.radius()));
-                if (Double.isFinite(amount) && amount >= MIN_AMOUNT) {
-                    ElementalPhaseApi.applyTemporary(target, element, amount,
-                            spread.respectAttachmentCooldown(), spreadSource(spread.element(), facts));
-                }
-            }
         } else if (action instanceof ReactionAction.AttachElement attach) {
-            LivingEntity target = target(execution, attach.target());
-            var definition = execution.snapshot().elements().get(attach.element());
-            if (valid(target, execution.level()) && definition != null && definition.application().fromReaction()) {
-                double amount = attach.amount().evaluate(context(facts, target, 0.0D, 0.0D));
-                if (Double.isFinite(amount) && amount >= MIN_AMOUNT) {
-                    int duration = attach.durationTicks().orElse(definition.attachment().durationTicks());
-                    ElementSourceSnapshot source = reactionProductSource(execution, attach.element(), facts);
-                    ElementalCapabilities.get(target).ifPresent(state -> {
-                        state.applyTemporary(attach.element(), Math.min(amount, definition.attachment().maxAmount()),
-                                execution.level().getGameTime(), duration,
-                                definition.attachment().cooldownTicks(), source);
-                    });
-                }
-            }
+            double amount = attach.amount().evaluate(context(facts, execution.target(), 0, 0));
+            applyExplicitAttachment(execution, execution.target(), attach.element(), amount, facts, budget);
         }
+    }
+
+    private void applyExplicitAttachment(QueuedHitExecution execution, LivingEntity target, ResourceLocation element,
+                                         double amount, ReactionFacts parentFacts, ReactionExecutionBudget budget) {
+        var definition = execution.snapshot().elements().get(element);
+        if (!valid(target, execution.level()) || definition == null || !Double.isFinite(amount) || amount < MIN_AMOUNT) return;
+        double incoming = Math.min(amount, definition.attachment().maxAmount());
+        long now = execution.level().getGameTime();
+        var source = reactionProductSource(execution, element, parentFacts);
+        var attacker = valid(execution.attacker(), execution.level()) ? execution.attacker() : null;
+        ElementalCapabilities.get(target).ifPresent(state -> {
+            var admission = state.tryTriggerVirtual(element, incoming, now, definition.attachment().cooldownTicks());
+            var current = state.state(element);
+            if (!admission.changed() || definition.attachment().virtual() && current != null
+                    && incoming < current.effectiveAmount(now)) return;
+            var guard = execution.guard().child();
+            var plan = new ReactionEngine().react(new ReactionRequest(state, element, incoming, now, definition,
+                    execution.snapshot().reactionIndex(), execution.snapshot().elements(), 0, parentFacts.attackerLevel(),
+                    source.elementStrength(), target.getHealth(), target.getMaxHealth(), state.resistance(element),
+                    Optional.of(source), condition -> CommonEvents.conditionMatches(condition, execution.source(), attacker, target, 0),
+                    guard, false));
+            if (plan.applyResult().changed()) state.startElementApplicationCooldown(element, now, definition.attachment().cooldownTicks());
+            if (!plan.actions().isEmpty()) executeOrdered(new QueuedHitExecution(execution.level(), attacker, target,
+                    execution.source(), plan, execution.snapshot(), now, guard), budget);
+        });
     }
 
     private static ElementSourceSnapshot reactionProductSource(QueuedHitExecution execution,
@@ -154,7 +191,7 @@ public final class ReactionActionExecutor {
                 facts.reactionId(), source == null ? execution.source().typeHolder().unwrapKey()
                         .map(net.minecraft.resources.ResourceKey::location).orElse(ReactionAction.DEFAULT_DAMAGE_TYPE)
                         : source.damageType(),
-                element, source == null ? 0.0D : source.elementStrength(), execution.level().getGameTime());
+                element, source == null ? facts.elementStrength() : source.elementStrength(), execution.level().getGameTime());
     }
 
     private static ElementSourceSnapshot reactionActionSource(QueuedHitExecution execution, ReactionFacts facts) {
@@ -177,11 +214,15 @@ public final class ReactionActionExecutor {
         if (definition == null) return;
         boolean createsElement = action.operation() == ReactionAction.ElementOperation.ADD
                 || action.operation() == ReactionAction.ElementOperation.SET;
-        if (createsElement && !definition.application().fromReaction()) return;
         ElementalCapabilities.get(target).ifPresent(state -> {
             if (action.operation() == ReactionAction.ElementOperation.CLEAR) {
                 state.remove(element);
             } else {
+                if (createsElement && definition.attachment().virtual()) {
+                    state.applyElement(definition, amount, execution.level().getGameTime(),
+                            definition.attachment().durationTicks(), true, reactionProductSource(execution, element, facts));
+                    return;
+                }
                 state.applyEffect(element, action.operation().name().toLowerCase(java.util.Locale.ROOT), amount,
                         execution.level().getGameTime(), definition.attachment().durationTicks(),
                         definition.attachment().cooldownTicks(), definition.attachment().maxAmount(), true);
@@ -189,119 +230,61 @@ public final class ReactionActionExecutor {
         });
     }
 
-    private static boolean hurt(QueuedHitExecution execution, LivingEntity target,
+    private static DamageOutcome hurt(QueuedHitExecution execution, LivingEntity target,
                                 ReactionAction.DamageSettings settings, ReactionFacts facts, double rawAmount) {
-        if (!valid(target, execution.level()) || !Double.isFinite(rawAmount) || rawAmount <= 0.0D) return false;
+        if (!valid(target, execution.level()) || !Double.isFinite(rawAmount) || rawAmount <= 0.0D) {
+            return DamageOutcome.REJECTED;
+        }
         double resistance = settings.resistanceElement().map(value -> resolve(value, facts))
-                .map(element -> ElementalCapabilities.get(target).resolve().map(state -> state.resistance(element)).orElse(0.0D))
-                .orElse(0.0D);
-        float amount = (float) Math.min(MAX_DAMAGE, Math.max(0.0D, rawAmount * (1.0D - resistance)));
-        if (amount <= 0.0F) return false;
+                .map(element -> ElementalPhaseApi.getResistance(target, element)).orElse(0.0D);
+        double reactionResistance = ElementalPhaseApi.getReactionResistance(target, facts.reactionId());
+        float amount = (float) ResistancePolicy.apply(rawAmount, resistance, reactionResistance);
         var holder = execution.level().registryAccess().registryOrThrow(Registries.DAMAGE_TYPE)
                 .getHolder(ResourceKey.create(Registries.DAMAGE_TYPE, settings.damageType()));
-        if (holder.isEmpty()) return false;
-        DamageSource source = settings.bypassArmor()
-                ? new DamageSource(holder.get(), execution.source().getDirectEntity(), execution.source().getEntity(),
-                execution.source().sourcePositionRaw()) {
-                    @Override
-                    public boolean is(TagKey<DamageType> tag) {
-                        return tag.equals(DamageTypeTags.BYPASSES_ARMOR) || super.is(tag);
-                    }
-                }
-                : new DamageSource(holder.get(), execution.source().getDirectEntity(),
+        if (holder.isEmpty()) return DamageOutcome.REJECTED;
+        DamageSource source = new DamageSource(holder.get(), execution.source().getDirectEntity(),
                 execution.source().getEntity(), execution.source().sourcePositionRaw());
+        if (amount <= 0.0F) {
+            return DamageOutcome.REJECTED;
+        }
         ReactionOutcome.TriggeredReaction label = new ReactionOutcome.TriggeredReaction(facts.reactionId(), facts.scale(),
                 amount, ReactionDamageDefinition.Mode.ADDITIONAL, Optional.of(settings.damageType()),
-                facts.direction().display().color());
-        int invulnerableTime = target.invulnerableTime;
-        if (settings.bypassInvulnerability()) target.invulnerableTime = 0;
-        try {
-            DamageNumberCompat.record(source, execution.level().getServer().getTickCount(),
-                    List.of(DamageNumberCompat.label(label)));
-            return ReactionDamageContext.call(label, source, settings.allowElementApplication(), settings.allowReactions(),
-                    execution.guard().child(), () -> target.hurt(source, amount));
-        } finally {
-            if (settings.bypassInvulnerability() && target.invulnerableTime < invulnerableTime) {
-                target.invulnerableTime = invulnerableTime;
-            }
-        }
+                facts.direction().display().color().resolve(facts.direction().trigger(), facts.direction().aura(),
+                        execution.snapshot().elements()), Optional.empty(), facts.reactionId(), facts.direction().display().showReaction());
+        DamageNumberCompat.record(source, execution.level().getServer().getTickCount(),
+                DamageNumberCompat.appearance(label));
+        return ReactionDamageContext.call(label, source, false, false,
+                execution.guard().child(), () -> target.hurt(source, amount))
+                ? DamageOutcome.ACCEPTED : DamageOutcome.REJECTED;
+    }
+
+    enum DamageOutcome {
+        REJECTED, ACCEPTED
     }
 
     private static List<LivingEntity> select(QueuedHitExecution execution, Vec3 center, double radius,
-                                             boolean includeOriginal, boolean includeAttacker, int maxTargets,
-                                             ReactionExecutionBudget budget) {
-        double radiusSquared = radius * radius;
-        Comparator<LivingEntity> nearest = Comparator
-                .comparingDouble((LivingEntity value) -> value.position().distanceToSqr(center))
-                .thenComparingInt(LivingEntity::getId);
-        List<LivingEntity> selected = new ArrayList<>();
-        LivingEntity original = execution.target();
-        boolean originalIncluded = includeOriginal && valid(original, execution.level())
-                && original.position().distanceToSqr(center) <= radiusSquared
-                && budget.claimTargetOperations(1) == 1;
-        if (originalIncluded) selected.add(original);
-        LivingEntity attacker = execution.attacker();
-        boolean attackerIncluded = includeAttacker && attacker != original && valid(attacker, execution.level())
-                && attacker.position().distanceToSqr(center) <= radiusSquared
-                && budget.claimTargetOperations(1) == 1;
-        int capacity = Math.max(0, maxTargets - selected.size());
-        if (capacity == 0) {
-            if (attackerIncluded) selected.add(attacker);
-            return List.copyOf(selected);
-        }
-        List<LivingEntity> candidates = execution.level().getEntitiesOfClass(LivingEntity.class,
-                new AABB(center, center).inflate(radius));
-        java.util.PriorityQueue<LivingEntity> nearestTargets = new java.util.PriorityQueue<>(
-                Math.max(1, capacity), nearest.reversed());
-        for (LivingEntity candidate : candidates) {
-            if (candidate == original || candidate == attacker) continue;
-            if (budget.claimTargetOperations(1) == 0) break;
-            if (!valid(candidate, execution.level()) || candidate.position().distanceToSqr(center) > radiusSquared) continue;
-            nearestTargets.add(candidate);
-            if (nearestTargets.size() > capacity) nearestTargets.poll();
-        }
-        List<LivingEntity> regular = new ArrayList<>(nearestTargets);
-        regular.sort(nearest);
-        selected.addAll(regular);
-        if (attackerIncluded) selected.add(attacker);
-        return List.copyOf(selected);
-    }
-
-    private static List<LivingEntity> reuse(QueuedHitExecution execution, List<LivingEntity> captured,
-                                            boolean includeOriginal, boolean includeAttacker, int maxTargets,
-                                            ReactionExecutionBudget budget) {
-        List<LivingEntity> selected = new ArrayList<>();
-        LivingEntity original = execution.target();
-        if (includeOriginal && valid(original, execution.level()) && budget.claimTargetOperations(1) == 1) {
-            selected.add(original);
-        }
-        LivingEntity attacker = execution.attacker();
-        boolean appendAttacker = includeAttacker && attacker != original && valid(attacker, execution.level())
-                && budget.claimTargetOperations(1) == 1;
-        if (selected.size() >= maxTargets) {
-            if (appendAttacker && !selected.contains(attacker)) selected.add(attacker);
-            return List.copyOf(selected);
-        }
-        for (LivingEntity candidate : captured) {
-            if (candidate == original || candidate == attacker) continue;
-            if (selected.size() >= maxTargets || budget.claimTargetOperations(1) == 0) break;
-            if (!valid(candidate, execution.level())) continue;
-            if (!selected.contains(candidate)) selected.add(candidate);
-        }
-        if (appendAttacker && !selected.contains(attacker)) selected.add(attacker);
-        return List.copyOf(selected);
+                                             boolean includeTarget, boolean includeAttacker,
+                                             int maxTargets, ReactionExecutionBudget budget) {
+        if (maxTargets <= 0 || budget.targetOperationsRemaining() == 0) return List.of();
+        List<LivingEntity> candidates = new ArrayList<>(execution.level().getEntitiesOfClass(LivingEntity.class,
+                new AABB(center, center).inflate(radius)));
+        if (includeAttacker && execution.attacker() != null) candidates.add(execution.attacker());
+        return selectCandidates(execution.target(), execution.attacker(), candidates,
+                entity -> valid(entity, execution.level()), entity -> entity.position().distanceToSqr(center),
+                LivingEntity::getId, radius * radius, maxTargets, includeTarget, includeAttacker, budget);
     }
 
     private static ReactionFormulaContext context(ReactionFacts facts, LivingEntity target, double distance, double radius) {
-        return context(facts, target, distance, radius, Optional.empty());
+        return context(facts, target, distance, radius, Optional.of(ReactionAction.ElementReference.trigger()));
     }
 
     private static ReactionFormulaContext context(ReactionFacts facts, LivingEntity target, double distance, double radius,
                                                    Optional<ReactionAction.ElementReference> resistanceElement) {
         double health = target == null ? facts.targetHealth() : target.getHealth();
         double maxHealth = target == null ? facts.targetMaxHealth() : target.getMaxHealth();
-        ResourceLocation element = resistanceElement.map(value -> resolve(value, facts)).orElse(facts.direction().trigger());
-        double resistance = target == null ? facts.targetResistance() : ElementalPhaseApi.getResistance(target, element);
+        double resistance = resistanceElement.map(value -> resolve(value, facts))
+                .map(element -> target == null ? facts.targetResistance() : ElementalPhaseApi.getResistance(target, element))
+                .orElse(0.0D);
         return new ReactionFormulaContext(facts.originalDamage(), facts.damageBeforeReaction(), facts.scale(),
                 facts.triggerAmount(), facts.auraAmount(), facts.consumedTrigger(), facts.consumedAura(),
                 facts.remainingTrigger(), facts.remainingAura(), facts.attackerLevel(), facts.elementStrength(),
@@ -309,42 +292,15 @@ public final class ReactionActionExecutor {
     }
 
     private static ResourceLocation resolve(ReactionAction.ElementReference reference, ReactionFacts facts) {
-        return switch (reference.kind()) {
-            case TRIGGER -> facts.direction().trigger();
-            case AURA -> facts.direction().aura();
-            case FIXED -> reference.fixed();
-        };
-    }
-
-    private static com.elementalphase.state.ElementSourceSnapshot spreadSource(
-            ReactionAction.ElementReference reference, ReactionFacts facts) {
-        if (reference.kind() == ReactionAction.ElementReference.Kind.AURA) {
-            for (var portion : facts.auraPortions()) {
-                var source = portion.temporarySource().or(() -> portion.permanentSource());
-                if (source.isPresent()) return source.orElseThrow();
-            }
-        }
-        return facts.source().orElse(null);
+        return reference.resolve(facts.direction().trigger(), facts.direction().aura());
     }
 
     private static LivingEntity target(QueuedHitExecution execution, ReactionAction.Target target) {
         return target == ReactionAction.Target.TARGET ? execution.target() : execution.attacker();
     }
 
-    private static Vec3 center(QueuedHitExecution execution, ReactionAction.Center center) {
-        return center == ReactionAction.Center.ATTACKER && execution.attacker() != null
-                ? execution.attacker().position() : execution.target().position();
-    }
-
     private static boolean valid(LivingEntity entity, ServerLevel level) {
         return entity != null && entity.level() == level && entity.isAlive() && !entity.isRemoved();
     }
 
-    private static double finiteNonNegative(double value) {
-        return Double.isFinite(value) ? Math.max(0.0D, value) : 0.0D;
-    }
-
-    private static int addTicks(int current, int addition) {
-        return (int) Math.min(Integer.MAX_VALUE, (long) Math.max(0, current) + Math.max(0, addition));
-    }
 }

@@ -21,7 +21,6 @@ import com.elementalphase.network.ModNetwork;
 import com.elementalphase.integration.damagenumber.DamageNumberCompat;
 import com.elementalphase.profile.EntityProfileResolver;
 import com.elementalphase.reaction.runtime.ReactionRuntimeController;
-import com.elementalphase.state.ApplicationCooldownKey;
 import com.elementalphase.state.ElementSourceSnapshot;
 import com.mojang.logging.LogUtils;
 import net.minecraft.resources.ResourceLocation;
@@ -119,6 +118,7 @@ public final class CommonEvents {
     public static void clearPlayerPreferences(PlayerEvent.PlayerLoggedOutEvent event) {
         if (!event.getEntity().level().isClientSide()) {
             DamageDisplayPreferenceStore.INSTANCE.remove(event.getEntity().getUUID());
+            ReactionRuntimeController.INSTANCE.remove(event.getEntity());
         }
     }
 
@@ -145,9 +145,23 @@ public final class CommonEvents {
         if (event.getLevel().isClientSide()) {
             return;
         }
-        PROJECTILE_SNAPSHOTS.capture(event.getEntity(), event.getBow(), event.getLevel().getGameTime(), ATTACK_RESOLVER,
-                ElementDataManager.snapshot());
+        captureProjectileWeapon(event.getEntity(), event.getBow());
     }
+
+    public static void captureProjectileWeapon(LivingEntity shooter, net.minecraft.world.item.ItemStack weapon) {
+        if (!shooter.level().isClientSide()) {
+            PROJECTILE_SNAPSHOTS.capture(shooter, weapon, shooter.level().getGameTime(), ATTACK_RESOLVER,
+                    ElementDataManager.snapshot());
+        }
+    }
+
+    @SubscribeEvent
+    public static void syncElementCatalog(PlayerEvent.PlayerLoggedInEvent event) {
+        if (event.getEntity() instanceof net.minecraft.server.level.ServerPlayer player) {
+            ModNetwork.sendElementCatalog(player);
+        }
+    }
+
 
     @SubscribeEvent
     public static void resetPlayerAfterDimensionChange(PlayerEvent.PlayerChangedDimensionEvent event) {
@@ -178,6 +192,7 @@ public final class CommonEvents {
     public static void removeReactionRuntimeEntity(EntityLeaveLevelEvent event) {
         if (!event.getLevel().isClientSide() && event.getEntity() instanceof LivingEntity living) {
             ReactionRuntimeController.INSTANCE.remove(living);
+            ElementalCapabilities.get(living).ifPresent(state -> state.clearVirtualElements());
         }
     }
 
@@ -217,8 +232,6 @@ public final class CommonEvents {
                 if (element == null) {
                     return;
                 }
-                Entity sourceEntity = event.getSource().getEntity() != null
-                        ? event.getSource().getEntity() : direct != null ? direct : target;
                 ResourceLocation damageType = event.getSource().typeHolder().unwrapKey()
                         .map(key -> key.location()).orElse(ResourceLocation.withDefaultNamespace("generic"));
                 ElementSourceSnapshot sourceSnapshot = new ElementSourceSnapshot(
@@ -226,14 +239,10 @@ public final class CommonEvents {
                         Optional.ofNullable(direct).map(Entity::getUUID), attack.sourceId(), damageType,
                         attack.element(), attack.elementStrength(), target.level().getGameTime());
                 if (ReactionDamageContext.current().isPresent() && !ReactionDamageContext.allowsReactions()) {
-                    if (element.application().fromAttack() && element.attachment().retainAfterAttack()) {
-                        state.applyTemporary(attack.element(),
-                                Math.min(attack.mountAmount(), element.attachment().maxAmount()),
-                                target.level().getGameTime(),
-                                element.attachment().durationTicks(), element.attachment().cooldownTicks(), sourceSnapshot);
-                    }
-                    event.setAmount((float) Math.max(0.0D,
-                            event.getAmount() * (1.0D - state.resistance(attack.element()))));
+                    state.applyElement(element, attack.mountAmount(), target.level().getGameTime(),
+                            element.attachment().durationTicks(), true, sourceSnapshot);
+                    event.setAmount((float) com.elementalphase.combat.ResistancePolicy.apply(
+                            event.getAmount(), state.resistance(attack.element())));
                     return;
                 }
                 var reservation = REACTION_SCHEDULER.reserve(target.getServer());
@@ -241,16 +250,13 @@ public final class CommonEvents {
                     LOGGER.warn("Elemental reaction execution queue is full; skipping elemental processing for this hit");
                     return;
                 }
-                ApplicationCooldownKey cooldownKey = attack.application()
-                        .map(application -> new ApplicationCooldownKey(sourceEntity.getUUID(), target.getUUID(),
-                                application.cooldownGroup())).orElse(null);
                 LivingEntity attacker = event.getSource().getEntity() instanceof LivingEntity living ? living : null;
                 com.elementalphase.reaction.ReactionChainGuard guard = ReactionDamageContext.chainGuard()
                         .orElseGet(com.elementalphase.reaction.ReactionChainGuard::new);
                 try {
                     var result = COMBAT_PIPELINE.resolve(new CombatPipeline.CombatInput(event.getAmount(),
                             state.resistance(attack.element()), attack, state, target.level().getGameTime(), element,
-                            snapshot.reactionIndex(), snapshot.elements(), sourceSnapshot, cooldownKey,
+                            snapshot.reactionIndex(), snapshot.elements(), sourceSnapshot,
                             attacker instanceof Player player ? player.experienceLevel : 0.0D,
                             target.getHealth(), target.getMaxHealth(),
                             condition -> conditionMatches(condition, event.getSource(), attacker, target,
@@ -297,19 +303,25 @@ public final class CommonEvents {
             }
         }
         ReactionRuntimeController.INSTANCE.clear(server);
+        ElementDataManager.snapshot().elements().keySet().stream()
+                .filter(element -> com.elementalphase.registry.ModEnchantments.forElement(element).isEmpty())
+                .sorted(java.util.Comparator.comparing(ResourceLocation::toString))
+                .forEach(element -> LOGGER.warn("Element {} has no registered attachment enchantment; "
+                        + "restart the game or server after adding its data pack", element));
+        server.getPlayerList().getPlayers().forEach(ModNetwork::sendElementCatalog);
         for (var error : report.errors()) {
             LOGGER.error("Skipping elemental data {}: {}", error.resource(), error.message());
         }
         for (var error : overlayReport.errors()) {
             LOGGER.error("Skipping KubeJS elemental data {}: {}", error.resource(), error.message());
         }
-        LOGGER.info("Loaded elemental data: {} elements, {} reactions, {} profiles, {} attack sources; {} files skipped",
+        LOGGER.info("Loaded elemental data: {} elements, {} reactions, {} profiles; {} files skipped",
                 report.snapshot().elements().size(), report.snapshot().reactions().size(),
-                report.snapshot().entityProfiles().size(), report.snapshot().attackSources().size(),
+                report.snapshot().entityProfiles().size(),
                 report.errors().size() + overlayReport.errors().size());
     }
 
-    private static boolean conditionMatches(ReactionCondition condition,
+    public static boolean conditionMatches(ReactionCondition condition,
                                             net.minecraft.world.damagesource.DamageSource source,
                                             LivingEntity attacker, LivingEntity target, double damage) {
         boolean result;
@@ -328,22 +340,16 @@ public final class CommonEvents {
                         TagKey.create(Registries.DAMAGE_TYPE, value.tag().orElseThrow());
                 result = source.typeHolder().is(expected);
             }
-        } else if (condition instanceof ReactionCondition.Source value) {
-            result = switch (value.kind()) {
-                case PROJECTILE -> source.getDirectEntity() instanceof Projectile;
-                case ENVIRONMENT -> source.getEntity() == null;
-                case MELEE -> attacker != null && source.getDirectEntity() == attacker;
-                case MAGIC -> source.typeHolder().unwrapKey().map(key -> key.location().getPath().contains("magic"))
-                        .orElse(false);
-            };
         } else if (condition instanceof ReactionCondition.MinimumDamage value) {
             result = damage >= value.value();
-        } else if (condition instanceof ReactionCondition.TargetOnFire value) {
-            result = target.isOnFire() == value.value();
-        } else if (condition instanceof ReactionCondition.TargetInWater value) {
-            result = target.isInWater() == value.value();
-        } else if (condition instanceof ReactionCondition.TargetIsBoss value) {
-            result = (target instanceof EnderDragon || target instanceof WitherBoss) == value.value();
+        } else if (condition instanceof ReactionCondition.TargetState value) {
+            boolean active = switch (value.state()) {
+                case ON_FIRE -> target.isOnFire();
+                case IN_WATER -> target.isInWater();
+                case FROZEN -> target.level() instanceof net.minecraft.server.level.ServerLevel level
+                        && ReactionRuntimeController.INSTANCE.isFrozen(level, target, level.getGameTime());
+            };
+            result = active == value.value();
         } else {
             result = false;
         }

@@ -1,24 +1,37 @@
 {
-  "enabled": true,
   "priority": 80,
-  "elements": ["elemental_phase:ice", "elemental_phase:lightning"],
-  "directions": [
+  "minimum_scale": 0.1,
+  "display": {
+    "show_reaction": true
+  },
+  "reactions": [
     {
-      "trigger": "elemental_phase:lightning", "aura": "elemental_phase:ice", "minimum_scale": 0.1,
-      "consumption": {"trigger": 1.0, "aura": 1.0}, "conditions": [],
-      "display": {"color": "#B388FF", "show_reaction": true},
-      "actions": [
-        {"type": "additional_damage", "formula": "scale", "resistance_element": "elemental_phase:ice"},
-        {"type": "mob_effect", "target": "target", "effect": "minecraft:weakness", "duration_ticks": 100, "amplifier": 0, "ambient": false, "visible": true}
-      ]
-    },
-    {
-      "trigger": "elemental_phase:ice", "aura": "elemental_phase:lightning", "minimum_scale": 0.1,
-      "consumption": {"trigger": 1.0, "aura": 1.0}, "conditions": [],
-      "display": {"color": "#9DEBFF", "show_reaction": true},
-      "actions": [
-        {"type": "additional_damage", "formula": "scale", "resistance_element": "elemental_phase:ice"},
-        {"type": "mob_effect", "target": "target", "effect": "minecraft:weakness", "duration_ticks": 100, "amplifier": 0, "ambient": false, "visible": true}
+      "bidirectional": {
+        "elements": [
+          {
+            "element": "elemental_phase:lightning",
+            "ratio": 1
+          },
+          {
+            "element": "elemental_phase:ice",
+            "ratio": 1
+          }
+        ]
+      },
+      "color": "$trigger",
+      "damage": [
+        {
+          "type": "additional_damage",
+          "formula": "scale",
+          "resistance_element": "elemental_phase:ice"
+        }
+      ],
+      "mob_effects": [
+        {
+          "effect": "minecraft:weakness",
+          "duration_ticks": 100,
+          "level": 0
+        }
       ]
     }
   ]

@@ -11,6 +11,8 @@ public record FrozenReactionState(long startedAt, long expiresAt, int durationTi
     }
 
     public FrozenReactionState refresh(long now, int durationTicks) {
+        if (durationTicks < 1) throw new IllegalArgumentException("Invalid freeze duration");
+        if (active(now) && durationTicks < remainingTicks(now)) return this;
         return create(now, durationTicks);
     }
 

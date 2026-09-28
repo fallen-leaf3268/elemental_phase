@@ -31,7 +31,7 @@ public final class KubeJsHooks {
         overlay.disabled().forEach(reactions::remove);
         reactions.putAll(overlay.replacements());
         return new ElementDataSnapshot(base.elements(), reactions, ReactionIndex.build(reactions),
-                base.entityProfiles(), base.attackSources());
+                base.entityProfiles());
     }
 
     public record Overlay(Map<ResourceLocation, ReactionSpec> replacements, Set<ResourceLocation> disabled,

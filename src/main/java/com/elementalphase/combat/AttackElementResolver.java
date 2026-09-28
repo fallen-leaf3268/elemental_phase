@@ -1,62 +1,44 @@
 package com.elementalphase.combat;
 
+import com.elementalphase.data.ElementDataManager;
 import com.elementalphase.data.ElementDataSnapshot;
-import com.elementalphase.data.model.AttackSourceDefinition;
+import com.elementalphase.enchantment.ElementEnchantmentData;
 import com.elementalphase.registry.ModAttributes;
-import net.minecraft.core.registries.BuiltInRegistries;
+import com.elementalphase.registry.ModEnchantments;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.tags.TagKey;
 import net.minecraft.world.damagesource.DamageSource;
-import net.minecraft.world.damagesource.DamageType;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.projectile.Projectile;
 import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.item.enchantment.Enchantment;
 
-import java.util.ArrayList;
-import java.util.Comparator;
-import java.util.List;
+import java.util.HashSet;
 import java.util.Optional;
+import java.util.Set;
 
 public final class AttackElementResolver {
+    private final Set<String> warnedConflicts = new HashSet<>();
+    private long conflictGeneration = Long.MIN_VALUE;
+
     public Optional<ElementAttackContext> resolve(DamageSource source, LivingEntity target, ElementDataSnapshot snapshot) {
+        var damage = damageSelection(source, snapshot);
+        if (damage.conflicted()) return Optional.empty();
         LivingEntity attacker = source.getEntity() instanceof LivingEntity living ? living : null;
         boolean directMelee = attacker != null && source.getDirectEntity() == attacker
                 && source.typeHolder().unwrapKey().map(ResourceKey::location)
                 .map(AttackElementResolver::isMeleeDamageType).orElse(false);
-        List<Candidate> enchantments = directMelee
-                ? enchantmentCandidates(MeleeWeaponResolver.resolve(attacker), snapshot)
-                : List.of();
-        List<Candidate> intrinsic = directMelee ? intrinsicCandidates(attacker) : List.of();
-        List<Candidate> damageId = damageTypeCandidates(source, snapshot, AttackSourceDefinition.SourceKind.DAMAGE_TYPE_ID);
-        List<Candidate> damageTag = damageTypeCandidates(source, snapshot, AttackSourceDefinition.SourceKind.DAMAGE_TYPE_TAG);
-        Candidate selected = choose(enchantments, intrinsic, damageId, damageTag);
-        if (selected == null) {
-            return Optional.empty();
+        double strength = strength(attacker);
+        if (directMelee) {
+            var enchantment = context(enchantmentCandidate(MeleeWeaponResolver.resolve(attacker), snapshot),
+                    strength, snapshot, ElementAttackContext.SourceKind.ENCHANTMENT);
+            if (enchantment.isPresent()) return enchantment;
+            var intrinsic = context(intrinsicCandidate(attacker), strength, snapshot, ElementAttackContext.SourceKind.INTRINSIC);
+            if (intrinsic.isPresent()) return intrinsic;
         }
-        double strength = attacker == null ? 1.0D : attacker.getAttributeValue(ModAttributes.ELEMENT_STRENGTH.get());
-        if (!Double.isFinite(strength) || strength < 0.0D) {
-            strength = 0.0D;
-        }
-        double amount = Math.min(1_000_000.0D, selected.baseAmount() * strength);
-        return amount < 0.000001D ? Optional.empty() : Optional.of(new ElementAttackContext(selected.element(), amount,
-                selected.sourceKind(), selected.mappingId(), selected.application(), strength));
-    }
-
-    public Candidate choose(List<Candidate> enchantments, List<Candidate> intrinsic,
-                            List<Candidate> damageTypeIds, List<Candidate> damageTypeTags) {
-        Candidate candidate = best(enchantments, true);
-        if (candidate != null) {
-            return candidate;
-        }
-        candidate = best(intrinsic, false);
-        if (candidate != null) {
-            return candidate;
-        }
-        candidate = best(damageTypeIds, false);
-        return candidate != null ? candidate : best(damageTypeTags, false);
+        return context(damage.element().map(AttackElementResolver::damageCandidate), strength, snapshot,
+                ElementAttackContext.SourceKind.DAMAGE_TYPE_TAG);
     }
 
     static boolean isMeleeDamageType(ResourceLocation type) {
@@ -66,132 +48,75 @@ public final class AttackElementResolver {
     }
 
     public ProjectileElementSnapshot captureProjectile(ItemStack weapon, LivingEntity attacker, ElementDataSnapshot snapshot) {
-        Candidate enchantment = best(enchantmentCandidates(weapon, snapshot), true);
-        Candidate intrinsic = best(intrinsicCandidates(attacker), false);
-        double strength = attacker.getAttributeValue(ModAttributes.ELEMENT_STRENGTH.get());
-        if (!Double.isFinite(strength) || strength < 0.0D) {
-            strength = 0.0D;
-        }
-        return new ProjectileElementSnapshot(true, strength, toSnapshotCandidate(enchantment), toSnapshotCandidate(intrinsic));
+        return new ProjectileElementSnapshot(true, strength(attacker),
+                enchantmentCandidate(weapon, snapshot), intrinsicCandidate(attacker));
     }
 
     public Optional<ElementAttackContext> resolveProjectile(DamageSource source, Projectile projectile,
                                                             ElementDataSnapshot snapshot) {
+        var damage = damageSelection(source, snapshot);
+        if (damage.conflicted()) return Optional.empty();
         ProjectileElementSnapshot captured = ProjectileElementSnapshot.readFrom(projectile.getPersistentData())
                 .orElse(new ProjectileElementSnapshot(true, 1.0D, Optional.empty(), Optional.empty()));
-        Optional<ElementAttackContext> enchantment = contextFromSnapshot(captured.enchantment(), captured.strength(), snapshot,
-                ElementAttackContext.SourceKind.ENCHANTMENT);
-        if (enchantment.isPresent()) {
-            return enchantment;
-        }
-        Optional<ElementAttackContext> intrinsic = contextFromSnapshot(captured.intrinsic(), captured.strength(), snapshot,
-                ElementAttackContext.SourceKind.INTRINSIC);
-        if (intrinsic.isPresent()) {
-            return intrinsic;
-        }
-        Candidate damage = choose(List.of(), List.of(),
-                damageTypeCandidates(source, snapshot, AttackSourceDefinition.SourceKind.DAMAGE_TYPE_ID),
-                damageTypeCandidates(source, snapshot, AttackSourceDefinition.SourceKind.DAMAGE_TYPE_TAG));
-        if (damage == null) return Optional.empty();
-        double amount = Math.min(1_000_000.0D, damage.baseAmount() * captured.strength());
-        return amount < 0.000001D ? Optional.empty() : Optional.of(new ElementAttackContext(damage.element(),
-                amount, damage.sourceKind(), damage.mappingId(), damage.application(), captured.strength()));
+        var enchantment = context(captured.enchantment(), captured.strength(), snapshot, ElementAttackContext.SourceKind.ENCHANTMENT);
+        if (enchantment.isPresent()) return enchantment;
+        var intrinsic = context(captured.intrinsic(), captured.strength(), snapshot, ElementAttackContext.SourceKind.INTRINSIC);
+        if (intrinsic.isPresent()) return intrinsic;
+        return context(damage.element().map(AttackElementResolver::damageCandidate), captured.strength(), snapshot,
+                ElementAttackContext.SourceKind.DAMAGE_TYPE_TAG);
     }
 
-    private static Optional<ProjectileElementSnapshot.Candidate> toSnapshotCandidate(Candidate candidate) {
-        return candidate == null ? Optional.empty() : Optional.of(new ProjectileElementSnapshot.Candidate(candidate.element(),
-                candidate.baseAmount(), candidate.mappingId(), candidate.enchantmentId(), candidate.application()));
+    private ElementDamageTags.Selection damageSelection(DamageSource source, ElementDataSnapshot snapshot) {
+        var result = ElementDamageTags.select(snapshot.elements().keySet(),
+                tag -> source.is(TagKey.create(Registries.DAMAGE_TYPE, tag)));
+        if (result.conflicted()) {
+            long generation = ElementDataManager.generation();
+            if (generation != conflictGeneration) {
+                conflictGeneration = generation;
+                warnedConflicts.clear();
+            }
+            String type = source.typeHolder().unwrapKey().map(key -> key.location().toString()).orElse(source.getMsgId());
+            if (warnedConflicts.add(type)) {
+                com.mojang.logging.LogUtils.getLogger().warn(
+                        "Skipping elemental processing for damage type {}: conflicting element damage tags {}",
+                        type, result.matches().stream().map(ElementDamageTags::tagId).toList());
+            }
+        }
+        return result;
     }
 
-    private static Optional<ElementAttackContext> contextFromSnapshot(Optional<ProjectileElementSnapshot.Candidate> candidate,
-                                                                        double strength, ElementDataSnapshot snapshot,
-                                                                        ElementAttackContext.SourceKind kind) {
+    private static Optional<ProjectileElementSnapshot.Candidate> enchantmentCandidate(
+            ItemStack item, ElementDataSnapshot snapshot) {
+        return ElementEnchantmentData.activeElement(item, snapshot.elements().keySet())
+                .map(element -> new ProjectileElementSnapshot.Candidate(element, 1.0D,
+                        ModEnchantments.enchantmentId(element), Optional.of(ModEnchantments.enchantmentId(element))));
+    }
+
+    private static Optional<ProjectileElementSnapshot.Candidate> intrinsicCandidate(LivingEntity attacker) {
+        return com.elementalphase.capability.ElementalCapabilities.get(attacker).resolve()
+                .flatMap(state -> state.intrinsicAttack().map(attack -> new ProjectileElementSnapshot.Candidate(
+                        attack.element(), attack.baseAmount(), attack.element(), Optional.empty())));
+    }
+
+    private static ProjectileElementSnapshot.Candidate damageCandidate(ResourceLocation element) {
+        return new ProjectileElementSnapshot.Candidate(element, 1.0D, ElementDamageTags.tagId(element), Optional.empty());
+    }
+
+    static Optional<ElementAttackContext> context(Optional<ProjectileElementSnapshot.Candidate> candidate,
+                                                 double strength, ElementDataSnapshot snapshot,
+                                                 ElementAttackContext.SourceKind kind) {
         return candidate.filter(value -> snapshot.elements().containsKey(value.element()))
-                .filter(value -> value.baseAmount() * strength >= 0.000001D)
-                .map(value -> new ElementAttackContext(value.element(), Math.min(1_000_000.0D,
-                        value.baseAmount() * strength), kind, value.sourceId(), value.application(), strength));
+                .filter(value -> Double.isFinite(strength) && strength >= 0.0D && strength <= 1_000_000.0D)
+                .flatMap(value -> {
+                    double amount = Math.min(snapshot.elements().get(value.element()).attachment().maxAmount(),
+                            value.baseAmount() * strength);
+                    return amount < 0.000001D ? Optional.empty() : Optional.of(new ElementAttackContext(
+                            value.element(), amount, kind, value.sourceId(), strength));
+                });
     }
 
-    private static List<Candidate> enchantmentCandidates(ItemStack item, ElementDataSnapshot snapshot) {
-        List<Candidate> candidates = new ArrayList<>();
-        for (var entry : item.getAllEnchantments().entrySet()) {
-            Enchantment enchantment = entry.getKey();
-            ResourceLocation enchantmentId = BuiltInRegistries.ENCHANTMENT.getKey(enchantment);
-            if (enchantmentId == null) {
-                continue;
-            }
-            for (AttackSourceDefinition definition : snapshot.attackSources()) {
-                if (definition.kind() == AttackSourceDefinition.SourceKind.ENCHANTMENT_ID
-                        && definition.selector().equals(enchantmentId.toString())
-                        || definition.kind() == AttackSourceDefinition.SourceKind.ENCHANTMENT_TAG
-                        && inEnchantmentTag(enchantmentId, ResourceLocation.parse(definition.selector()))) {
-                    candidates.add(new Candidate(definition.id(), Optional.of(enchantmentId), definition.element(),
-                            definition.baseAmount(), definition.priority(), ElementAttackContext.SourceKind.ENCHANTMENT,
-                            definition.application()));
-                }
-            }
-        }
-        return candidates;
-    }
-
-    private static boolean inEnchantmentTag(ResourceLocation enchantmentId, ResourceLocation tagId) {
-        return BuiltInRegistries.ENCHANTMENT.getHolder(ResourceKey.create(Registries.ENCHANTMENT, enchantmentId))
-                .map(holder -> holder.is(TagKey.create(Registries.ENCHANTMENT, tagId)))
-                .orElse(false);
-    }
-
-    private static List<Candidate> intrinsicCandidates(LivingEntity attacker) {
-        return com.elementalphase.capability.ElementalCapabilities.get(attacker)
-                .resolve()
-                .flatMap(state -> state.intrinsicAttack().map(attack -> new Candidate(
-                        attack.element(), Optional.empty(), attack.element(), attack.baseAmount(), 0,
-                        ElementAttackContext.SourceKind.INTRINSIC, Optional.empty())))
-                .map(List::of)
-                .orElseGet(List::of);
-    }
-
-    private static List<Candidate> damageTypeCandidates(DamageSource source, ElementDataSnapshot snapshot,
-                                                         AttackSourceDefinition.SourceKind expectedKind) {
-        List<Candidate> candidates = new ArrayList<>();
-        Optional<ResourceKey<DamageType>> typeKey = source.typeHolder().unwrapKey();
-        for (AttackSourceDefinition definition : snapshot.attackSources()) {
-            if (definition.kind() != expectedKind) {
-                continue;
-            }
-            ResourceLocation selector = ResourceLocation.parse(definition.selector());
-            boolean matches = expectedKind == AttackSourceDefinition.SourceKind.DAMAGE_TYPE_ID
-                    ? typeKey.map(ResourceKey::location).filter(selector::equals).isPresent()
-                    : source.typeHolder().is(TagKey.create(Registries.DAMAGE_TYPE, selector));
-            if (matches) {
-                candidates.add(new Candidate(definition.id(), Optional.empty(), definition.element(), definition.baseAmount(),
-                        definition.priority(), expectedKind == AttackSourceDefinition.SourceKind.DAMAGE_TYPE_ID
-                        ? ElementAttackContext.SourceKind.DAMAGE_TYPE_ID : ElementAttackContext.SourceKind.DAMAGE_TYPE_TAG,
-                        definition.application()));
-            }
-        }
-        return candidates;
-    }
-
-    private static Candidate best(List<Candidate> candidates, boolean enchantment) {
-        Comparator<Candidate> comparator = Comparator.comparingInt(Candidate::priority).reversed()
-                .thenComparing(candidate -> enchantment
-                        ? candidate.enchantmentId().map(ResourceLocation::toString).orElse("")
-                        : "")
-                .thenComparing(candidate -> candidate.mappingId().toString());
-        return candidates.stream().min(comparator).orElse(null);
-    }
-
-    public record Candidate(ResourceLocation mappingId, Optional<ResourceLocation> enchantmentId, ResourceLocation element,
-                            double baseAmount, int priority, ElementAttackContext.SourceKind sourceKind,
-                            Optional<AttackSourceDefinition.Application> application) {
-        public Candidate {
-            enchantmentId = enchantmentId == null ? Optional.empty() : enchantmentId;
-            application = application == null ? Optional.empty() : application;
-        }
-
-        public Candidate(ResourceLocation mappingId, Optional<ResourceLocation> enchantmentId, ResourceLocation element,
-                         double baseAmount, int priority, ElementAttackContext.SourceKind sourceKind) {
-            this(mappingId, enchantmentId, element, baseAmount, priority, sourceKind, Optional.empty());
-        }
+    private static double strength(LivingEntity attacker) {
+        double value = attacker == null ? 1.0D : attacker.getAttributeValue(ModAttributes.ELEMENT_STRENGTH.get());
+        return Double.isFinite(value) && value >= 0.0D ? Math.min(1_000_000.0D, value) : 0.0D;
     }
 }

@@ -4,7 +4,6 @@ import net.minecraft.network.FriendlyByteBuf;
 
 public record FrozenStateSyncPacket(int entityId, boolean frozen, int durationTicks,
                                     int remainingTicks, boolean valid) {
-    public static final int MAX_TICKS = 72_000;
 
     public FrozenStateSyncPacket(int entityId, boolean frozen, int durationTicks, int remainingTicks) {
         this(entityId, frozen, durationTicks, remainingTicks, true);
@@ -28,7 +27,7 @@ public record FrozenStateSyncPacket(int entityId, boolean frozen, int durationTi
     }
 
     public boolean isValid() {
-        if (!valid || entityId < 0 || durationTicks < 0 || durationTicks > MAX_TICKS
+        if (!valid || entityId < 0 || durationTicks < 0
                 || remainingTicks < 0 || remainingTicks > durationTicks) return false;
         return frozen ? durationTicks > 0 : durationTicks == 0 && remainingTicks == 0;
     }

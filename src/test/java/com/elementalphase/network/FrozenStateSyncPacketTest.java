@@ -15,6 +15,8 @@ class FrozenStateSyncPacketTest {
                 new FrozenStateSyncPacket(7, true, 100, 80)));
         assertEquals(new FrozenStateSyncPacket(7, false, 0, 0), roundTrip(
                 new FrozenStateSyncPacket(7, false, 0, 0)));
+        assertEquals(new FrozenStateSyncPacket(7, true, Integer.MAX_VALUE, Integer.MAX_VALUE), roundTrip(
+                new FrozenStateSyncPacket(7, true, Integer.MAX_VALUE, Integer.MAX_VALUE)));
     }
 
     @Test
@@ -22,7 +24,6 @@ class FrozenStateSyncPacketTest {
         assertFalse(new FrozenStateSyncPacket(-1, true, 100, 80).isValid());
         assertFalse(new FrozenStateSyncPacket(1, true, 100, 101).isValid());
         assertFalse(new FrozenStateSyncPacket(1, true, -1, 0).isValid());
-        assertFalse(new FrozenStateSyncPacket(1, true, 72_001, 1).isValid());
         assertFalse(new FrozenStateSyncPacket(1, false, 1, 0).isValid());
     }
 
@@ -31,8 +32,8 @@ class FrozenStateSyncPacketTest {
         FriendlyByteBuf buffer = new FriendlyByteBuf(Unpooled.buffer());
         buffer.writeVarInt(1);
         buffer.writeBoolean(true);
-        buffer.writeVarInt(72_001);
-        buffer.writeVarInt(72_001);
+        buffer.writeVarInt(-1);
+        buffer.writeVarInt(0);
 
         assertFalse(FrozenStateSyncPacket.decode(buffer).isValid());
     }

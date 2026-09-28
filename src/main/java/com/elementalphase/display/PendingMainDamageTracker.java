@@ -15,18 +15,18 @@ public final class PendingMainDamageTracker<S> {
     private int size;
     private long sequence;
 
-    public void record(S source, int targetId, long tick, List<ReactionLabel> labels) {
+    public void record(S source, int targetId, long tick, Appearance appearance) {
         Objects.requireNonNull(source, "source");
-        List<ReactionLabel> copy = List.copyOf(labels);
+        Objects.requireNonNull(appearance, "appearance");
         if (size >= MAX_ENTRIES) {
             evictOldest();
         }
         entries.computeIfAbsent(source, ignored -> new ArrayDeque<>())
-                .addFirst(new Entry(targetId, tick, sequence++, copy));
+                .addFirst(new Entry(targetId, tick, sequence++, appearance));
         size++;
     }
 
-    public Optional<List<ReactionLabel>> consume(S source, int targetId, long tick) {
+    public Optional<Appearance> consume(S source, int targetId, long tick) {
         Deque<Entry> stack = entries.get(source);
         if (stack == null) {
             return Optional.empty();
@@ -40,7 +40,7 @@ public final class PendingMainDamageTracker<S> {
                 if (stack.isEmpty()) {
                     entries.remove(source);
                 }
-                return Optional.of(entry.labels());
+                return Optional.of(entry.appearance());
             }
         }
         return Optional.empty();
@@ -93,6 +93,10 @@ public final class PendingMainDamageTracker<S> {
         }
     }
 
-    private record Entry(int targetId, long tick, long sequence, List<ReactionLabel> labels) {
+    public record Appearance(int color, List<ReactionLabel> visibleLabels) {
+        public Appearance { visibleLabels = List.copyOf(visibleLabels); }
+    }
+
+    private record Entry(int targetId, long tick, long sequence, Appearance appearance) {
     }
 }

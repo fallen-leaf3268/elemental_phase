@@ -1,6 +1,5 @@
 package com.elementalphase.integration.jade;
 
-import com.elementalphase.data.model.ElementApplicationPolicy;
 import com.elementalphase.data.model.ElementAttachmentPolicy;
 import com.elementalphase.data.model.ElementDefinition;
 import com.elementalphase.data.model.ElementDisplayDefinition;
@@ -40,8 +39,22 @@ class JadeElementDataTest {
 
     private static ElementDefinition definition(ResourceLocation id, boolean visible, int order, int color,
                                                 Optional<ResourceLocation> icon) {
-        return new ElementDefinition(id, true, ElementApplicationPolicy.DEFAULT, ElementAttachmentPolicy.DEFAULT,
+        return new ElementDefinition(id, ElementAttachmentPolicy.DEFAULT,
                 new ElementDisplayDefinition("element.test." + id.getPath(), color, visible, order, icon));
+    }
+
+    @Test
+    void hidesVirtualElementsEvenWhenTheirDisplayIsEnabled() {
+        ResourceLocation virtual = id("virtual");
+        ResourceLocation normal = id("normal");
+        var virtualDefinition = new ElementDefinition(virtual,
+                new ElementAttachmentPolicy(ElementAttachmentPolicy.Mode.VIRTUAL, 0, 10, 10.0D),
+                new ElementDisplayDefinition("element.test.virtual", 0xFFFFFF, true, 0, Optional.empty()));
+
+        var entries = JadeElementData.collect(Map.of(virtual, 5.0D, normal, 2.0D),
+                Map.of(virtual, virtualDefinition, normal, definition(normal, true, 0, 0xFFFFFF, Optional.empty())));
+
+        assertEquals(java.util.List.of(normal), entries.stream().map(JadeElementData.Entry::id).toList());
     }
 
     private static ResourceLocation id(String path) {

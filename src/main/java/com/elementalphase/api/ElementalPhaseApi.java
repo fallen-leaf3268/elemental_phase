@@ -58,6 +58,14 @@ public final class ElementalPhaseApi {
         }).orElse(0.0D);
     }
 
+    public static double getReactionResistance(LivingEntity entity, ResourceLocation reaction) {
+        validateServerThread(entity);
+        return ElementalCapabilities.get(entity).resolve().map(state -> {
+            initialize(entity, state);
+            return state.reactionResistance(reaction);
+        }).orElse(0.0D);
+    }
+
     public static ElementRuntimeState.ApplyResult applyTemporary(LivingEntity entity, ResourceLocation element, double amount) {
         return applyTemporary(entity, element, amount, true);
     }
@@ -79,12 +87,8 @@ public final class ElementalPhaseApi {
         double acceptedAmount = Math.min(amount, definition.attachment().maxAmount());
         return ElementalCapabilities.get(entity).resolve().map(state -> {
             initialize(entity, state);
-            ElementRuntimeState.ApplyResult result = respectAttachmentCooldown
-                    ? state.applyTemporary(element, acceptedAmount, entity.level().getGameTime(), definition.attachment().durationTicks(),
-                    definition.attachment().cooldownTicks(), source)
-                    : state.applyTemporaryIgnoringCooldown(element, acceptedAmount, entity.level().getGameTime(),
-                    definition.attachment().durationTicks(), source);
-            return result;
+            return state.applyElement(definition, acceptedAmount, entity.level().getGameTime(),
+                    definition.attachment().durationTicks(), respectAttachmentCooldown, source);
         }).orElse(ElementRuntimeState.ApplyResult.UNAVAILABLE);
     }
 
@@ -112,9 +116,7 @@ public final class ElementalPhaseApi {
         if (definition == null || !Double.isFinite(amount) || amount < 0.000001D) {
             return Optional.of(ElementRuntimeState.ApplyResult.INVALID_INPUT);
         }
-        return definition.application().fromReaction()
-                ? Optional.empty()
-                : Optional.of(ElementRuntimeState.ApplyResult.UNAVAILABLE);
+        return Optional.empty();
     }
 
     private static void initialize(LivingEntity entity, com.elementalphase.state.ElementalState state) {

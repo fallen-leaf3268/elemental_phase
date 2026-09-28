@@ -16,6 +16,7 @@ public final class ElementRuntimeState {
     private final long order;
     private double permanentCurrent;
     private boolean hasTemporary;
+    private boolean virtual;
     private double temporaryAmount;
     private long temporaryStartedAt = NO_TIME;
     private int temporaryDurationTicks;
@@ -62,6 +63,15 @@ public final class ElementRuntimeState {
     public double effectiveAmount(long now) {
         refresh(now);
         return Math.max(permanentCurrent, hasTemporary ? temporaryAmount : 0.0D);
+    }
+
+    public boolean virtual() {
+        return virtual;
+    }
+
+    public void setVirtual(boolean virtual) {
+        this.virtual = virtual;
+        if (virtual) reconcilePermanent(0.0D, 1);
     }
 
     public ApplyResult tryApplyTemporary(double amount, long now, int duration, int cooldown) {

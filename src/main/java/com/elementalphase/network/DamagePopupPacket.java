@@ -59,6 +59,10 @@ public record DamagePopupPacket(int entityId, double x, double y, double z, doub
         return new DamagePopupPacket(entityId, x, y, z, sideOffset, damage, color, reactionIds);
     }
 
+    public boolean shouldDisplay() {
+        return isValid() && damage > 0.1F;
+    }
+
     public boolean isValid() {
         if (entityId < 0 || !Double.isFinite(x) || !Double.isFinite(y) || !Double.isFinite(z)
                 || !Double.isFinite(sideOffset) || sideOffset < 0.0D

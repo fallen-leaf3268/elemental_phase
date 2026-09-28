@@ -2,6 +2,7 @@ plugins {
     id 'eclipse'
     id 'idea'
     id 'net.minecraftforge.gradle' version '[6.0,6.2)'
+    id 'org.spongepowered.mixin' version '0.7.38'
 }
 
 version = mod_version
@@ -49,6 +50,9 @@ sourceSets.main.resources {
 
 repositories {
     maven {
+        url 'https://repo.spongepowered.org/repository/maven-public/'
+    }
+    maven {
         url 'https://maven.architectury.dev/'
     }
     maven {
@@ -67,6 +71,7 @@ repositories {
 
 dependencies {
     minecraft "net.minecraftforge:forge:${minecraft_version}-${forge_version}"
+    annotationProcessor 'org.spongepowered:mixin:0.8.5:processor'
     testImplementation platform('org.junit:junit-bom:5.10.2')
     testImplementation 'org.junit.jupiter:junit-jupiter'
     compileOnly fg.deobf('curse.maven:jade-324717:6271651')
@@ -80,6 +85,11 @@ dependencies {
     }
 }
 
+mixin {
+    add sourceSets.main, 'elemental_phase.refmap.json'
+    config 'elemental_phase.mixins.json'
+}
+
 tasks.named('test', Test).configure {
     useJUnitPlatform()
 }
@@ -89,6 +99,10 @@ tasks.withType(JavaCompile).configureEach {
 }
 
 tasks.named('processResources', ProcessResources).configure {
+    dependsOn tasks.named('compileJava')
+    from(layout.buildDirectory.file('tmp/compileJava/compileJava-refmap.json')) {
+        rename { 'elemental_phase.refmap.json' }
+    }
     def replaceProperties = [
             minecraft_version      : minecraft_version,
             minecraft_version_range: minecraft_version_range,
@@ -109,6 +123,8 @@ tasks.named('processResources', ProcessResources).configure {
 }
 
 tasks.named('jar', Jar).configure {
-    manifest.attributes('Implementation-Version': project.version)
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    manifest.attributes('Implementation-Version': project.version,
+            'MixinConfigs': 'elemental_phase.mixins.json')
     finalizedBy 'reobfJar'
 }

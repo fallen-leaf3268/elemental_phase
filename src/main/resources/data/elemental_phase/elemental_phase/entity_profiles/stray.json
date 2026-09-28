@@ -1,1 +1,1 @@
-{"selector":{"type":"entity_id","id":"minecraft:stray"},"permanent_elements":{"elemental_phase:ice":{"amount":8.0}},"resistances":{"elemental_phase:ice":0.5},"intrinsic_attack":{"element":"elemental_phase:ice","base_amount":1.0},"element_strength":1.0}
+{"selector":{"type":"entity_id","id":"minecraft:stray"},"permanent_elements":[{"element":"elemental_phase:ice","amount":8.0}],"intrinsic_attack":{"element":"elemental_phase:ice","base_amount":1.0},"resistances":[{"element":"elemental_phase:ice","value":0.5}]}

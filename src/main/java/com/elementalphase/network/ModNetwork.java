@@ -21,7 +21,7 @@ import java.util.Optional;
 import java.util.function.Supplier;
 
 public final class ModNetwork {
-    private static final String PROTOCOL_VERSION = "6";
+    private static final String PROTOCOL_VERSION = "8";
     private static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
             ResourceLocation.fromNamespaceAndPath(ElementalPhase.MOD_ID, "main"),
             () -> PROTOCOL_VERSION,
@@ -51,11 +51,32 @@ public final class ModNetwork {
                 FrozenStateSyncPacket::decode,
                 ModNetwork::handleFrozenStateSync,
                 Optional.of(NetworkDirection.PLAY_TO_CLIENT));
+        CHANNEL.registerMessage(3, ElementCatalogPacket.class,
+                ElementCatalogPacket::encode, ElementCatalogPacket::decode,
+                ModNetwork::handleElementCatalog, Optional.of(NetworkDirection.PLAY_TO_CLIENT));
         registered = true;
     }
 
     public static void sendFrozenState(LivingEntity target, FrozenStateSyncPacket packet) {
         CHANNEL.send(PacketDistributor.TRACKING_ENTITY_AND_SELF.with(() -> target), packet);
+    }
+
+    public static void sendElementCatalog(net.minecraft.server.level.ServerPlayer player) {
+        var snapshot = com.elementalphase.data.ElementDataManager.snapshot();
+        var elements = new java.util.HashMap<ResourceLocation, String>();
+        snapshot.elements().forEach((id, definition) ->
+                elements.put(id, definition.display().translationKey()));
+        var reactionNames = new java.util.HashMap<ResourceLocation, String>();
+        snapshot.reactions().forEach((id, spec) -> reactionNames.put(id, spec.translationKey()));
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), new ElementCatalogPacket(elements, reactionNames));
+    }
+
+    private static void handleElementCatalog(ElementCatalogPacket message,
+                                              Supplier<NetworkEvent.Context> contextSupplier) {
+        var context = contextSupplier.get();
+        context.enqueueWork(() -> DistExecutor.unsafeRunWhenOn(Dist.CLIENT,
+                () -> () -> com.elementalphase.client.ClientElementBooks.receive(message)));
+        context.setPacketHandled(true);
     }
 
     public static void sendFrozenStateTo(net.minecraft.server.level.ServerPlayer player,
@@ -76,7 +97,7 @@ public final class ModNetwork {
         double sideOffset = Math.max(0.45D, target.getBbWidth() * 0.75D);
         DamagePopupPacket packet = new DamagePopupPacket(target.getId(), anchor.x, anchor.y, anchor.z,
                 sideOffset, damage, color, reactionIds).normalizedForSending();
-        if (!packet.isValid()) {
+        if (!packet.shouldDisplay()) {
             return;
         }
         CHANNEL.send(PacketDistributor.TRACKING_ENTITY_AND_SELF.with(() -> target), packet);

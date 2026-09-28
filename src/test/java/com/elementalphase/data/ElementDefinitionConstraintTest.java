@@ -8,36 +8,45 @@ import org.junit.jupiter.api.Test;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ElementDefinitionConstraintTest {
     @Test
-    void rejectsFixedPermanentAmountAboveElementMaximum() {
+    void clampsFixedPermanentAmountToElementMaximum() {
         Map<ResourceLocation, JsonElement> values = elementsWithMaximum(1.0D);
         values.put(resource("entity_profiles/zombie.json"), JsonParser.parseString("""
                 {"selector":{"type":"entity_id","id":"minecraft:zombie"},
-                 "permanent_elements":{"test:fire":{"amount":2.0}}}
+                 "permanent_elements":[{"element":"test:fire","amount":2.0}]}
                 """));
 
         var report = new ElementDataParser().parseLenient(values);
 
-        assertFalse(report.errors().isEmpty());
-        assertTrue(report.snapshot().entityProfiles().isEmpty());
+        assertTrue(report.errors().isEmpty(), report.errors().toString());
+        assertEquals(1.0D, report.snapshot().entityProfiles().get(0).permanentElements()
+                .get(ResourceLocation.fromNamespaceAndPath("test", "fire")).amount());
     }
 
+
     @Test
-    void rejectsFixedAttackAmountAboveElementMaximum() {
+    void skipsOnlyVirtualPermanentEntryAndClampsIntrinsicAttack() {
         Map<ResourceLocation, JsonElement> values = elementsWithMaximum(1.0D);
-        values.put(resource("attack_sources/fire.json"), JsonParser.parseString("""
-                {"kind":"damage_type_id","selector":"minecraft:generic",
-                 "element":"test:fire","base_amount":2.0}
+        values.put(resource("elements/wind.json"), JsonParser.parseString(
+                "{\"attachment\":{\"mode\":\"virtual\"}}"));
+        values.put(resource("entity_profiles/zombie.json"), JsonParser.parseString("""
+                {"selector":{"type":"entity_id","id":"minecraft:zombie"},
+                 "permanent_elements":[{"element":"test:fire","amount":2},{"element":"test:wind","amount":3}],
+                 "intrinsic_attack":{"element":"test:fire","base_amount":4},
+                 "resistances":[{"element":"test:wind","value":0.5}]}
                 """));
 
         var report = new ElementDataParser().parseLenient(values);
 
-        assertFalse(report.errors().isEmpty());
-        assertTrue(report.snapshot().attackSources().isEmpty());
+        assertTrue(report.errors().isEmpty(), report.errors().toString());
+        var profile = report.snapshot().entityProfiles().get(0);
+        assertEquals(1, profile.permanentElements().size());
+        assertEquals(1.0D, profile.intrinsicAttack().orElseThrow().baseAmount());
+        assertEquals(0.5D, profile.resistances().get(ResourceLocation.fromNamespaceAndPath("test", "wind")));
     }
 
     private static Map<ResourceLocation, JsonElement> elementsWithMaximum(double maximum) {

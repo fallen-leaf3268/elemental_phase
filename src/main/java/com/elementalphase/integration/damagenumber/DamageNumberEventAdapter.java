@@ -55,13 +55,13 @@ public final class DamageNumberEventAdapter {
         if (!eventType.isInstance(event) || component == null) {
             return false;
         }
-        Object format = invoke(getFormat, event);
-        if (format == null) {
-            return false;
-        }
         try {
             setColor.invoke(event, color);
-            append.invoke(format, component);
+            if (!component.getString().isEmpty()) {
+                Object format = invoke(getFormat, event);
+                if (format == null) return false;
+                append.invoke(format, component);
+            }
             return true;
         } catch (IllegalAccessException | InvocationTargetException exception) {
             return false;

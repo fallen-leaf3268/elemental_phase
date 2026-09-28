@@ -3,6 +3,7 @@ package com.elementalphase.display;
 import com.elementalphase.api.ElementalPhaseApi;
 import com.elementalphase.data.model.ReactionDamageDefinition;
 import com.elementalphase.display.PendingMainDamageTracker.ReactionLabel;
+import com.elementalphase.display.PendingMainDamageTracker.Appearance;
 import com.elementalphase.reaction.ReactionOutcome;
 import com.elementalphase.reaction.ReactionPlan;
 import com.elementalphase.reaction.ReactionOutcome.TriggeredReaction;
@@ -22,6 +23,7 @@ import java.util.Deque;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
 
 public final class DamageDisplayCoordinator {
     private static final int MAX_QUEUED_REACTIONS = 4096;
@@ -41,12 +43,15 @@ public final class DamageDisplayCoordinator {
             return;
         }
         long tick = level.getServer().getTickCount();
-        List<ReactionLabel> labels = stableDistinct(outcome.reactions().stream()
-                .filter(reaction -> reaction.mode() == ReactionDamageDefinition.Mode.AMPLIFY)
+        var amplifying = outcome.reactions().stream()
+                .filter(reaction -> reaction.mode() == ReactionDamageDefinition.Mode.AMPLIFY).toList();
+        List<ReactionLabel> labels = stableDistinct(amplifying.stream().filter(TriggeredReaction::showName)
                 .map(reaction -> new ReactionLabel(reaction.id(), reaction.displayColor()))
                 .toList());
-        mainDamage.record(source, target.getId(), tick, labels);
-        DamageNumberCompat.record(source, tick, labels);
+        var appearance = new Appearance(amplifying.isEmpty() ? DamageColorResolver.resolve(source)
+                : amplifying.get(0).displayColor(), labels);
+        mainDamage.record(source, target.getId(), tick, appearance);
+        if (!amplifying.isEmpty()) DamageNumberCompat.record(source, tick, appearance);
         for (TriggeredReaction reaction : outcome.additionalReactions()) {
             if (additionalDamage.size() >= MAX_QUEUED_REACTIONS) {
                 break;
@@ -61,9 +66,9 @@ public final class DamageDisplayCoordinator {
     public void recordReactionAttack(LivingEntity target, DamageSource source, ReactionPlan plan) {
         if (!(target.level() instanceof ServerLevel level) || ReactionDamageContext.current().isPresent()) return;
         long tick = level.getServer().getTickCount();
-        List<ReactionLabel> labels = visibleLabels(plan);
-        mainDamage.record(source, target.getId(), tick, labels);
-        DamageNumberCompat.record(source, tick, labels);
+        var appearance = appearance(plan, DamageColorResolver.resolve(source));
+        mainDamage.record(source, target.getId(), tick, appearance);
+        if (!plan.mainDamageLabels().isEmpty()) DamageNumberCompat.record(source, tick, appearance);
     }
 
     public void onFinalDamage(LivingDamageEvent event) {
@@ -72,16 +77,16 @@ public final class DamageDisplayCoordinator {
             return;
         }
         var internal = ReactionDamageContext.currentFor(event.getSource());
-        List<ReactionLabel> labels = ReactionDamageContext.current().isPresent() ? List.of()
-                : mainDamage.consume(event.getSource(), target.getId(), level.getServer().getTickCount())
-                .orElseGet(List::of);
+        Optional<Appearance> appearance = ReactionDamageContext.current().isPresent() ? Optional.empty()
+                : mainDamage.consume(event.getSource(), target.getId(), level.getServer().getTickCount());
         if (internal.isPresent()) {
             TriggeredReaction reaction = internal.get();
             finalDamage.record(event, new PendingDamagePopup(target, event.getSource(),
-                    reaction.displayColor(), List.of(reaction.id())));
-        } else if (!labels.isEmpty()) {
+                    reaction.displayColor(), reaction.showName() ? List.of(reaction.id()) : List.of()));
+        } else if (appearance.isPresent()) {
+            var saved = appearance.orElseThrow();
             finalDamage.record(event, new PendingDamagePopup(target, event.getSource(),
-                    labels.get(0).color(), labels.stream().map(ReactionLabel::id).toList()));
+                    saved.color(), saved.visibleLabels().stream().map(ReactionLabel::id).toList()));
         } else {
             finalDamage.record(event, new PendingDamagePopup(target, event.getSource(),
                     DamageColorResolver.resolve(event.getSource()), List.of()));
@@ -158,7 +163,7 @@ public final class DamageDisplayCoordinator {
 
     private static boolean applyReactionDamage(LivingEntity target, DamageSource source, TriggeredReaction reaction,
                                                float damage, long tick) {
-        DamageNumberCompat.record(source, tick, List.of(DamageNumberCompat.label(reaction)));
+        DamageNumberCompat.record(source, tick, DamageNumberCompat.appearance(reaction));
         return ReactionDamageContext.call(reaction, source, () -> target.hurt(source, damage));
     }
 
@@ -173,9 +178,14 @@ public final class DamageDisplayCoordinator {
         return target.level() == level && !target.isRemoved() && target.isAlive();
     }
 
-    static List<ReactionLabel> visibleLabels(ReactionPlan plan) {
-        return stableDistinct(plan.labels().stream().filter(ReactionPlan.Label::visible)
+    static List<ReactionLabel> visibleLabels(List<ReactionPlan.Label> labels) {
+        return stableDistinct(labels.stream().filter(ReactionPlan.Label::visible)
                 .map(value -> new ReactionLabel(value.reactionId(), value.color())).toList());
+    }
+
+    public static Appearance appearance(ReactionPlan plan, int fallbackColor) {
+        var labels = plan.mainDamageLabels();
+        return new Appearance(labels.isEmpty() ? fallbackColor : labels.get(0).color(), visibleLabels(labels));
     }
 
     private static List<ReactionLabel> stableDistinct(List<ReactionLabel> labels) {

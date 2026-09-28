@@ -1,19 +1,47 @@
 {
-  "enabled": true,
   "priority": 100,
-  "elements": ["elemental_phase:fire", "elemental_phase:water"],
-  "directions": [
+  "minimum_scale": 0.1,
+  "display": {
+    "show_reaction": true
+  },
+  "reactions": [
     {
-      "trigger": "elemental_phase:water", "aura": "elemental_phase:fire", "minimum_scale": 0.1,
-      "consumption": {"trigger": 1.0, "aura": 2.0}, "conditions": [],
-      "display": {"color": "#4FAFFF", "show_reaction": true},
-      "actions": [{"type": "main_damage_bonus", "formula": "original_damage * 1.0"}]
+      "unidirectional": {
+        "trigger": {
+          "element": "elemental_phase:water",
+          "ratio": 1
+        },
+        "aura": {
+          "element": "elemental_phase:fire",
+          "ratio": 2
+        }
+      },
+      "color": "$trigger",
+      "damage": [
+        {
+          "type": "main_damage_bonus",
+          "formula": "original_damage * 1.0"
+        }
+      ]
     },
     {
-      "trigger": "elemental_phase:fire", "aura": "elemental_phase:water", "minimum_scale": 0.1,
-      "consumption": {"trigger": 1.0, "aura": 0.5}, "conditions": [],
-      "display": {"color": "#FF7A00", "show_reaction": true},
-      "actions": [{"type": "main_damage_bonus", "formula": "original_damage * 0.5"}]
+      "unidirectional": {
+        "trigger": {
+          "element": "elemental_phase:fire",
+          "ratio": 1
+        },
+        "aura": {
+          "element": "elemental_phase:water",
+          "ratio": 0.5
+        }
+      },
+      "color": "$trigger",
+      "damage": [
+        {
+          "type": "main_damage_bonus",
+          "formula": "original_damage * 0.5"
+        }
+      ]
     }
   ]
 }

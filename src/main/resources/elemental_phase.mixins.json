@@ -1,0 +1,17 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "com.elementalphase.mixin",
+  "compatibilityLevel": "JAVA_17",
+  "refmap": "elemental_phase.refmap.json",
+  "mixins": [
+    "AnvilMenuMixin",
+    "CrossbowItemMixin"
+  ],
+  "client": [
+    "CreativeModeTabsAccessor"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

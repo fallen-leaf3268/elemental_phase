@@ -1,6 +1,7 @@
 package com.elementalphase.reaction.formula;
 
 import java.util.List;
+import java.util.Set;
 import java.util.Objects;
 import java.util.OptionalDouble;
 import java.util.regex.Matcher;
@@ -21,6 +22,11 @@ public final class DamageFormulaParser {
         return new Parser(source).parse();
     }
 
+    public static ReactionFormula parseReaction(String source, Set<String> allowedVariables,
+                                                 Set<String> allowedFunctions, boolean allowComparisons) {
+        return new Parser(source, Set.copyOf(allowedVariables), Set.copyOf(allowedFunctions), allowComparisons).parse();
+    }
+
     public static final class FormulaParseException extends IllegalArgumentException {
         public FormulaParseException(int position, String message) {
             super("公式在位置 " + position + " 处" + message);
@@ -29,11 +35,21 @@ public final class DamageFormulaParser {
 
     private static final class Parser {
         private final String source;
+        private final Set<String> allowedVariables;
+        private final Set<String> allowedFunctions;
+        private final boolean allowComparisons;
         private int position;
         private int nodeCount;
         private int nesting;
 
         private Parser(String source) {
+            this(source, null, null, true);
+        }
+
+        private Parser(String source, Set<String> allowedVariables, Set<String> allowedFunctions, boolean allowComparisons) {
+            this.allowedVariables = allowedVariables;
+            this.allowedFunctions = allowedFunctions;
+            this.allowComparisons = allowComparisons;
             this.source = Objects.requireNonNull(source, "source");
             if (source.length() > MAX_SOURCE_LENGTH) {
                 throw new FormulaParseException(MAX_SOURCE_LENGTH, "长度超过上限 " + MAX_SOURCE_LENGTH);
@@ -56,6 +72,7 @@ public final class DamageFormulaParser {
             if (operation == null) {
                 return left;
             }
+            if (!allowComparisons) fail("此用途不支持比较运算");
             Node result = node(new BinaryNode(operation, left, expression()));
             skipWhitespace();
             if (comparisonOperation() != null) {
@@ -153,10 +170,12 @@ public final class DamageFormulaParser {
                 String identifier = identifier();
                 VariableNode variable = VariableNode.fromName(identifier);
                 if (variable != null) {
+                    if (allowedVariables != null && !allowedVariables.contains(identifier)) fail("此用途不支持变量 " + identifier);
                     return node(variable);
                 }
                 Function function = Function.fromName(identifier);
                 if (function != null) {
+                    if (allowedFunctions != null && !allowedFunctions.contains(identifier)) fail("此用途不支持函数 " + identifier);
                     skipWhitespace();
                     if (!consume('(')) {
                         throw new FormulaParseException(position, "函数缺少左括号");

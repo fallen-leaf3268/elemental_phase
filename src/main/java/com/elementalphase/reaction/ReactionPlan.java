@@ -5,6 +5,7 @@ import com.elementalphase.state.ElementRuntimeState;
 import net.minecraft.resources.ResourceLocation;
 
 import java.util.List;
+import java.util.Optional;
 
 public record ReactionPlan(double mainDamageBonus, double finalDamage,
                            ElementRuntimeState.ApplyResult applyResult,
@@ -18,10 +19,16 @@ public record ReactionPlan(double mainDamageBonus, double finalDamage,
         return new ReactionPlan(0.0D, damage, result, List.of(), List.of());
     }
 
-    public record Label(ResourceLocation reactionId, double scale, int color, boolean visible,
-                        ReactionFacts facts) {
+    public List<Label> mainDamageLabels() {
+        return labels.stream().filter(Label::amplifiesMainDamage).toList();
     }
 
-    public record PlannedAction(ReactionAction action, ReactionFacts facts) {
+    public record Label(ResourceLocation reactionId, double scale, int color, boolean visible,
+                        ReactionFacts facts, boolean amplifiesMainDamage) {
+    }
+
+    public record PlannedAction(ReactionAction action, ReactionFacts facts, Optional<ReactionAction.StateSnapshot> stateSnapshot) {
+        public PlannedAction { stateSnapshot = java.util.Objects.requireNonNull(stateSnapshot); }
+        public PlannedAction(ReactionAction action, ReactionFacts facts) { this(action, facts, Optional.empty()); }
     }
 }

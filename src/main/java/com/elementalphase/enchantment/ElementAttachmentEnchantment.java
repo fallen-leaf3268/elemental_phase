@@ -1,22 +1,43 @@
 package com.elementalphase.enchantment;
 
+import com.elementalphase.data.ElementDataManager;
+import net.minecraft.ChatFormatting;
+import net.minecraft.network.chat.Component;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.entity.EquipmentSlot;
-import net.minecraft.world.item.AxeItem;
-import net.minecraft.world.item.BowItem;
-import net.minecraft.world.item.CrossbowItem;
-import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.item.SwordItem;
-import net.minecraft.world.item.TridentItem;
 import net.minecraft.world.item.enchantment.Enchantment;
 import net.minecraft.world.item.enchantment.EnchantmentCategory;
 
 public final class ElementAttachmentEnchantment extends Enchantment {
-    private static final EnchantmentCategory CATEGORY = EnchantmentCategory.create("element_attachment",
-            ElementAttachmentEnchantment::supports);
+    private final ResourceLocation element;
 
-    public ElementAttachmentEnchantment() {
-        super(Rarity.RARE, CATEGORY, new EquipmentSlot[]{EquipmentSlot.MAINHAND, EquipmentSlot.OFFHAND});
+    public ElementAttachmentEnchantment(ResourceLocation element) {
+        super(Rarity.RARE, EnchantmentCategory.WEAPON,
+                new EquipmentSlot[]{EquipmentSlot.MAINHAND, EquipmentSlot.OFFHAND});
+        this.element = java.util.Objects.requireNonNull(element, "element");
+    }
+
+    public ResourceLocation element() {
+        return element;
+    }
+
+    @Override
+    public Component getFullname(int level) {
+        var name = Component.translatable("enchantment.elemental_phase.element_name",
+                ElementBookCatalog.name(element)).withStyle(ChatFormatting.GRAY);
+        if (level != 1) name.append(" ").append(Component.translatable("enchantment.level." + level));
+        return name;
+    }
+
+    @Override
+    public boolean isDiscoverable() {
+        return ElementDataManager.snapshot().elements().containsKey(element);
+    }
+
+    @Override
+    public boolean isTradeable() {
+        return isDiscoverable();
     }
 
     @Override
@@ -26,21 +47,16 @@ public final class ElementAttachmentEnchantment extends Enchantment {
 
     @Override
     public boolean canEnchant(ItemStack stack) {
-        return supports(stack.getItem());
+        return ElementEnchantmentData.isAllowed(stack);
     }
 
     @Override
     public boolean canApplyAtEnchantingTable(ItemStack stack) {
-        return supports(stack.getItem());
+        return ElementEnchantmentData.isAllowed(stack);
     }
 
     @Override
     protected boolean checkCompatibility(Enchantment other) {
         return !(other instanceof ElementAttachmentEnchantment) && super.checkCompatibility(other);
-    }
-
-    private static boolean supports(Item item) {
-        return item instanceof SwordItem || item instanceof AxeItem || item instanceof BowItem
-                || item instanceof CrossbowItem || item instanceof TridentItem;
     }
 }

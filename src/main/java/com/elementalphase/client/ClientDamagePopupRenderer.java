@@ -3,14 +3,13 @@ package com.elementalphase.client;
 import com.elementalphase.ElementalPhase;
 import com.elementalphase.config.ElementalPhaseClientConfig;
 import com.elementalphase.network.ModNetwork;
-import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Gui;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.particle.CritParticle;
 import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.server.packs.resources.ResourceManagerReloadListener;
-import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.AABB;
@@ -31,8 +30,7 @@ import java.util.Iterator;
 @Mod.EventBusSubscriber(modid = ElementalPhase.MOD_ID, value = Dist.CLIENT, bus = Mod.EventBusSubscriber.Bus.FORGE)
 public final class ClientDamagePopupRenderer {
     private static final String HUD_OVERLAY_ID = "damage_popups";
-    private static final DamagePopupFrameCache<FrameProjection> FRAME_CACHE = new DamagePopupFrameCache<>();
-    private static final Int2ObjectOpenHashMap<OcclusionSample> OCCLUSION_CACHE = new Int2ObjectOpenHashMap<>();
+    private static final Long2ObjectOpenHashMap<OcclusionSample> OCCLUSION_CACHE = new Long2ObjectOpenHashMap<>();
     private static Matrix4f projectionMatrix;
     private static Object occlusionWorldToken;
     private static double lastOcclusionCleanup = Double.NEGATIVE_INFINITY;
@@ -75,9 +73,7 @@ public final class ClientDamagePopupRenderer {
         double maxDistance = ElementalPhaseClientConfig.MAX_DISTANCE.get();
         double maxDistanceSquared = maxDistance * maxDistance;
         float fontScale = ElementalPhaseClientConfig.FONT_SCALE.get().floatValue();
-        double heightRatio = ElementalPhaseClientConfig.HEIGHT_RATIO.get();
         var projected = new DamagePopupPlacement.ScreenPoint();
-        FRAME_CACHE.beginFrame();
         DamagePopupManager.INSTANCE.forEachActive(now, (popup, offsetX, offsetY, alpha) -> {
             var packet = popup.packet();
             int entityId = packet.entityId();
@@ -85,38 +81,23 @@ public final class ClientDamagePopupRenderer {
                     || !DamagePopupVisibility.shouldRenderAlpha(alpha)) {
                 return;
             }
-            FrameProjection frame = FRAME_CACHE.getOrCompute(entityId, ignored -> {
-                if (!(minecraft.level.getEntity(entityId) instanceof LivingEntity entity)) {
-                    return null;
-                }
-                AABB bounds = entity.getBoundingBox();
-                double anchorX = (bounds.minX + bounds.maxX) * 0.5D;
-                double anchorY = DamagePopupPlacement.anchorY(bounds, heightRatio);
-                double anchorZ = (bounds.minZ + bounds.maxZ) * 0.5D;
-                double deltaX = anchorX - cameraPosition.x();
-                double deltaY = anchorY - cameraPosition.y();
-                double deltaZ = anchorZ - cameraPosition.z();
-                double distanceSquared = deltaX * deltaX + deltaY * deltaY + deltaZ * deltaZ;
-                if (!Double.isFinite(distanceSquared) || distanceSquared > maxDistanceSquared
-                        || !DamagePopupPlacement.projectToScreen(
-                        anchorX, anchorY, anchorZ,
-                        cameraPosition.x(), cameraPosition.y(), cameraPosition.z(),
-                        cameraLeft.x(), cameraLeft.y(), cameraLeft.z(),
-                        cameraUp.x(), cameraUp.y(), cameraUp.z(),
-                        cameraForward.x(), cameraForward.y(), cameraForward.z(),
-                        projectionMatrix, screenWidth, screenHeight, projected)) {
-                    return null;
-                }
-                return new FrameProjection(bounds, projected.x(), projected.y());
-            });
-            if (frame == null) {
+            Vec3 anchor = popup.anchor();
+            double distanceSquared = anchor.distanceToSqr(cameraPosition);
+            if (!Double.isFinite(distanceSquared) || distanceSquared > maxDistanceSquared
+                    || !DamagePopupPlacement.projectToScreen(
+                    anchor.x(), anchor.y(), anchor.z(),
+                    cameraPosition.x(), cameraPosition.y(), cameraPosition.z(),
+                    cameraLeft.x(), cameraLeft.y(), cameraLeft.z(),
+                    cameraUp.x(), cameraUp.y(), cameraUp.z(),
+                    cameraForward.x(), cameraForward.y(), cameraForward.z(),
+                    projectionMatrix, screenWidth, screenHeight, projected)) {
                 return;
             }
-            if (isBlocked(entityId, now, minecraft.level, cameraPosition, frame.bounds)) {
+            if (isBlocked(popup.id(), now, minecraft.level, cameraPosition, popup.bounds())) {
                 return;
             }
-            double renderX = frame.screenX + offsetX;
-            double renderY = frame.screenY + offsetY;
+            double renderX = projected.x() + offsetX;
+            double renderY = projected.y() + offsetY;
             double halfWidth = popup.textWidth() * fontScale * 0.5D;
             double height = minecraft.font.lineHeight * fontScale;
             if (renderX + halfWidth < 0.0D || renderX - halfWidth > screenWidth
@@ -159,16 +140,16 @@ public final class ClientDamagePopupRenderer {
         }
     }
 
-    private static boolean isBlocked(int entityId, double now, Level level,
+    private static boolean isBlocked(long popupId, double now, Level level,
                                      Vec3 cameraPosition, AABB bounds) {
-        OcclusionSample sample = OCCLUSION_CACHE.get(entityId);
+        OcclusionSample sample = OCCLUSION_CACHE.get(popupId);
         if (sample == null || DamagePopupOcclusion.shouldRefresh(
                 sample.checkedAt, now, sample.cameraX, sample.cameraY, sample.cameraZ,
                 cameraPosition.x(), cameraPosition.y(), cameraPosition.z(), sample.bounds, bounds)) {
             boolean blocked = DamagePopupOcclusion.isFullyBlocked(bounds,
                     point -> hasOpaqueBlockBetween(level, cameraPosition, point));
             sample = new OcclusionSample(now, cameraPosition.x(), cameraPosition.y(), cameraPosition.z(), bounds, blocked);
-            OCCLUSION_CACHE.put(entityId, sample);
+            OCCLUSION_CACHE.put(popupId, sample);
         }
         return sample.blocked;
     }
@@ -213,9 +194,6 @@ public final class ClientDamagePopupRenderer {
             this.bounds = bounds;
             this.blocked = blocked;
         }
-    }
-
-    private record FrameProjection(AABB bounds, double screenX, double screenY) {
     }
 
     @Mod.EventBusSubscriber(modid = ElementalPhase.MOD_ID, value = Dist.CLIENT, bus = Mod.EventBusSubscriber.Bus.MOD)

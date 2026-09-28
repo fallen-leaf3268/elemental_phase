@@ -1,5 +1,6 @@
 package com.elementalphase.display;
 
+import com.elementalphase.data.model.ReactionSpec;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.MutableComponent;
 import net.minecraft.resources.ResourceLocation;
@@ -7,9 +8,12 @@ import net.minecraft.resources.ResourceLocation;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 public final class DamagePopupText {
+    private static Map<ResourceLocation, String> reactionNames = Map.of();
+
     private DamagePopupText() {
     }
 
@@ -18,7 +22,16 @@ public final class DamagePopupText {
     }
 
     public static String translationKey(ResourceLocation id) {
-        return "reaction." + id.getNamespace() + "." + id.getPath().replace('/', '.');
+        return reactionNames.getOrDefault(id, ReactionSpec.defaultTranslationKey(id));
+    }
+
+    public static String translationKey(ResourceLocation id, Map<ResourceLocation, ReactionSpec> reactions) {
+        ReactionSpec reaction = reactions.get(id);
+        return reaction == null ? ReactionSpec.defaultTranslationKey(id) : reaction.translationKey();
+    }
+
+    public static void replaceReactionNames(Map<ResourceLocation, String> names) {
+        reactionNames = Map.copyOf(names);
     }
 
     public static String formatDamage(double damage) {

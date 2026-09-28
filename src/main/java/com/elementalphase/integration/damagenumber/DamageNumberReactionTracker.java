@@ -1,6 +1,6 @@
 package com.elementalphase.integration.damagenumber;
 
-import com.elementalphase.display.PendingMainDamageTracker.ReactionLabel;
+import com.elementalphase.display.PendingMainDamageTracker.Appearance;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -17,18 +17,17 @@ public final class DamageNumberReactionTracker<S> {
     private final Map<S, Deque<Entry>> entries = new IdentityHashMap<>();
     private int size;
 
-    public boolean record(S source, UUID playerId, long tick, List<ReactionLabel> labels) {
-        if (source == null || playerId == null || labels == null || labels.isEmpty()
-                || labels.stream().anyMatch(java.util.Objects::isNull) || size >= MAX_ENTRIES) {
+    public boolean record(S source, UUID playerId, long tick, Appearance appearance) {
+        if (source == null || playerId == null || appearance == null || size >= MAX_ENTRIES) {
             return false;
         }
         entries.computeIfAbsent(source, ignored -> new ArrayDeque<>())
-                .addLast(new Entry(playerId, tick, List.copyOf(labels)));
+                .addLast(new Entry(playerId, tick, appearance));
         size++;
         return true;
     }
 
-    public Optional<List<ReactionLabel>> consume(S source, UUID playerId, long tick) {
+    public Optional<Appearance> consume(S source, UUID playerId, long tick) {
         if (source == null || playerId == null) {
             return Optional.empty();
         }
@@ -45,7 +44,7 @@ public final class DamageNumberReactionTracker<S> {
                 if (sourceEntries.isEmpty()) {
                     entries.remove(source);
                 }
-                return Optional.of(entry.labels());
+                return Optional.of(entry.appearance());
             }
         }
         return Optional.empty();
@@ -73,6 +72,6 @@ public final class DamageNumberReactionTracker<S> {
         size = 0;
     }
 
-    private record Entry(UUID playerId, long tick, List<ReactionLabel> labels) {
+    private record Entry(UUID playerId, long tick, Appearance appearance) {
     }
 }

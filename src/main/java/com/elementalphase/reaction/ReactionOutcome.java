@@ -28,10 +28,19 @@ public record ReactionOutcome(double amplifyDamage, List<TriggeredEffect> effect
 
     public record TriggeredReaction(ResourceLocation id, double scale, double damage,
                                     ReactionDamageDefinition.Mode mode, Optional<ResourceLocation> damageType,
-                                    int displayColor, Optional<TriggeredArea> area) {
+                                    int displayColor, Optional<TriggeredArea> area, ResourceLocation originReactionId,
+                                    boolean showName) {
         public TriggeredReaction {
             damageType = Optional.ofNullable(damageType).orElseThrow();
             area = Optional.ofNullable(area).orElseThrow();
+            java.util.Objects.requireNonNull(id);
+            java.util.Objects.requireNonNull(originReactionId);
+        }
+
+        public TriggeredReaction(ResourceLocation id, double scale, double damage,
+                                 ReactionDamageDefinition.Mode mode, Optional<ResourceLocation> damageType,
+                                 int displayColor, Optional<TriggeredArea> area) {
+            this(id, scale, damage, mode, damageType, displayColor, area, id, true);
         }
 
         public TriggeredReaction(ResourceLocation id, double scale, double damage,

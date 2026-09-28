@@ -39,13 +39,46 @@ public final class ElementalPhaseCommands {
                 .then(Commands.argument("element", ResourceLocationArgument.id())
                         .executes(context -> remove(context.getSource(), EntityArgument.getEntity(context, "entity"),
                                 ResourceLocationArgument.getId(context, "element"))))));
+        root.then(Commands.literal("book").then(Commands.argument("element", ResourceLocationArgument.id())
+                .suggests((context, builder) -> net.minecraft.commands.SharedSuggestionProvider.suggestResource(
+                        ElementDataManager.snapshot().elements().keySet(), builder))
+                .executes(context -> giveBook(context.getSource(), context.getSource().getPlayerOrException(),
+                        ResourceLocationArgument.getId(context, "element")))
+                .then(Commands.argument("player", EntityArgument.player()).executes(context ->
+                        giveBook(context.getSource(), EntityArgument.getPlayer(context, "player"),
+                                ResourceLocationArgument.getId(context, "element"))))));
         dispatcher.register(root);
+    }
+
+    private static int giveBook(CommandSourceStack source, net.minecraft.server.level.ServerPlayer player,
+                                ResourceLocation element) throws com.mojang.brigadier.exceptions.CommandSyntaxException {
+        if (!ElementDataManager.snapshot().elements().containsKey(element)) {
+            throw new com.mojang.brigadier.exceptions.SimpleCommandExceptionType(
+                    Component.translatable("command.elemental_phase.unknown_element", element)).create();
+        }
+        if (com.elementalphase.registry.ModEnchantments.forElement(element).isEmpty()) {
+            throw new com.mojang.brigadier.exceptions.SimpleCommandExceptionType(
+                    Component.translatable("command.elemental_phase.unregistered_enchantment", element)).create();
+        }
+        var book = com.elementalphase.enchantment.ElementEnchantmentData.createBook(element);
+        if (!player.getInventory().add(book)) player.drop(book, false);
+        player.containerMenu.broadcastChanges();
+        source.sendSuccess(() -> Component.translatable("command.elemental_phase.book_given",
+                element, player.getDisplayName()), true);
+        return 1;
     }
 
     private static int inspect(CommandSourceStack source, Entity entity) throws com.mojang.brigadier.exceptions.CommandSyntaxException {
         LivingEntity living = living(source, entity);
         long now = living.level().getGameTime();
+        var resolver = new com.elementalphase.profile.EntityProfileResolver();
+        var snapshot = ElementDataManager.snapshot();
+        var profile = resolver.resolve(living, snapshot);
+        source.sendSuccess(() -> Component.translatable("command.elemental_phase.inspect_profile",
+                profile.profileId().map(id -> Component.literal(id.toString()))
+                        .orElseGet(() -> Component.translatable("command.elemental_phase.none")), profile.priority()), false);
         ElementalCapabilities.get(living).ifPresent(state -> {
+            resolver.initializeIfNeeded(living, state, snapshot);
             for (ResourceLocation id : state.knownElements(now)) {
                 ElementRuntimeState runtime = state.state(id);
                 double preset = runtime == null ? 0.0D : runtime.permanentPreset();
@@ -58,6 +91,9 @@ public final class ElementalPhaseCommands {
                 source.sendSuccess(() -> Component.translatable("command.elemental_phase.inspect_line", id,
                         preset, current, temporary, effective, recovery, expiry, cooldown, state.resistance(id)), false);
             }
+            state.reactionResistances().entrySet().stream().sorted(java.util.Map.Entry.comparingByKey())
+                    .forEach(entry -> source.sendSuccess(() -> Component.translatable(
+                            "command.elemental_phase.inspect_reaction_resistance", entry.getKey(), entry.getValue()), false));
         });
         return 1;
     }

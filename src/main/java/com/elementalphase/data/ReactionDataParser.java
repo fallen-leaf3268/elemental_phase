@@ -21,19 +21,20 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.regex.Pattern;
 
 public final class ReactionDataParser {
     public static final double MINIMUM_SCALE = 0.1D;
     public static final int MAX_DIRECTIONS = 64;
     public static final int MAX_CONDITIONS = 32;
     public static final int MAX_ACTIONS = 32;
-    public static final double MAX_RADIUS = 32.0D;
-    public static final int MAX_TARGETS = 64;
-    public static final int MAX_FREEZE_TICKS = 72_000;
     private static final double MAX_NUMBER = 1_000_000.0D;
-    private static final Pattern TARGET_SET = Pattern.compile("[a-z0-9_.-]{1,64}");
     private static final ReactionFormula ALWAYS = DamageFormulaParser.parseReaction("1");
+    private static final Set<String> DOT_VARIABLES = Set.of("original_damage", "current_damage", "scale",
+            "trigger_amount", "aura_amount", "consumed_trigger", "consumed_aura", "remaining_trigger",
+            "remaining_aura", "attacker_level", "element_strength", "target_health", "target_max_health",
+            "target_health_ratio", "target_resistance");
+    private static final Set<String> FUNCTIONS = Set.of("min", "max", "clamp", "abs", "floor", "ceil", "round");
+    private static final Set<String> BASIC_FUNCTIONS = Set.of("min", "max", "clamp");
 
     public ParseResult parse(ResourceLocation id, JsonObject json,
                              Map<ResourceLocation, ElementDefinition> elements) {
@@ -46,78 +47,123 @@ public final class ReactionDataParser {
 
     private ReactionSpec parseChecked(ResourceLocation id, JsonObject json,
                                       Map<ResourceLocation, ElementDefinition> elements) {
-        rejectUnknown(json, Set.of("enabled", "priority", "elements", "directions"), "$");
-        if (!bool(json, "enabled", true, "$")) {
-            return null;
-        }
+        rejectUnknown(json, Set.of("priority", "minimum_scale", "conditions", "display", "reactions"), "$");
         int priority = integer(json, "priority", 0, Integer.MIN_VALUE, Integer.MAX_VALUE, "$", false);
-        JsonArray elementArray = requiredArray(json, "elements", "$", 2, 64);
-        LinkedHashSet<ResourceLocation> participants = new LinkedHashSet<>();
-        for (int index = 0; index < elementArray.size(); index++) {
-            ResourceLocation element = id(elementArray.get(index), "elements[" + index + "]");
-            requireElement(element, elements, "elements[" + index + "]");
-            if (!participants.add(element)) {
-                throw invalid("elements[" + index + "]", "存在重复元素 " + element);
-            }
-        }
-        JsonArray directions = requiredArray(json, "directions", "$", 1, MAX_DIRECTIONS);
-        List<ReactionDirection> parsed = new ArrayList<>(directions.size());
-        Set<ReactionDirectionKey> keys = new HashSet<>();
-        for (int index = 0; index < directions.size(); index++) {
-            String path = "directions[" + index + "]";
-            ReactionDirection direction = direction(object(directions.get(index), path), path, priority,
-                    participants, elements);
-            if (!keys.add(new ReactionDirectionKey(direction.trigger(), direction.aura()))) {
-                throw invalid(path, "重复定义方向 " + direction.trigger() + " -> " + direction.aura());
-            }
-            parsed.add(direction);
-        }
-        return new ReactionSpec(id, priority, participants, parsed);
-    }
-
-    private ReactionDirection direction(JsonObject json, String path, int defaultPriority,
-                                        Set<ResourceLocation> participants,
-                                        Map<ResourceLocation, ElementDefinition> elements) {
-        rejectUnknown(json, Set.of("trigger", "aura", "priority", "minimum_scale", "consumption",
-                "conditions", "display", "actions"), path);
-        ResourceLocation trigger = requiredId(json, "trigger", path);
-        ResourceLocation aura = requiredId(json, "aura", path);
-        if (trigger.equals(aura)) throw invalid(path, "trigger 与 aura 不能相同");
-        if (!participants.contains(trigger)) throw invalid(path + ".trigger", "元素不在顶层 elements 中");
-        if (!participants.contains(aura)) throw invalid(path + ".aura", "元素不在顶层 elements 中");
-        JsonObject consumption = requiredObject(json, "consumption", path);
-        rejectUnknown(consumption, Set.of("trigger", "aura"), path + ".consumption");
-        ReactionConsumption ratios = new ReactionConsumption(
-                number(consumption, "trigger", 0.0D, MAX_NUMBER, path + ".consumption", true),
-                number(consumption, "aura", 0.0D, MAX_NUMBER, path + ".consumption", true));
-        double minimum = number(json, "minimum_scale", MINIMUM_SCALE, MAX_NUMBER, path, false);
-        JsonArray conditionValues = array(json, "conditions", path, 0, MAX_CONDITIONS, false);
-        List<ReactionCondition> conditions = new ArrayList<>(conditionValues.size());
+        double minimum = number(json, "minimum_scale", MINIMUM_SCALE, MAX_NUMBER, "$", false);
+        JsonArray conditionValues = array(json, "conditions", "$", 0, MAX_CONDITIONS, false);
+        List<ReactionCondition> conditions = new ArrayList<>();
         for (int index = 0; index < conditionValues.size(); index++) {
-            String conditionPath = path + ".conditions[" + index + "]";
-            conditions.add(condition(object(conditionValues.get(index), conditionPath), conditionPath));
+            String path = "$.conditions[" + index + "]";
+            conditions.add(condition(object(conditionValues.get(index), path), path));
         }
-        ReactionDisplay display = display(requiredObject(json, "display", path), path + ".display");
-        JsonArray actionValues = array(json, "actions", path, 0, MAX_ACTIONS, false);
-        List<ReactionAction> actions = new ArrayList<>(actionValues.size());
-        Set<String> targetSets = new HashSet<>();
-        for (int index = 0; index < actionValues.size(); index++) {
-            String actionPath = path + ".actions[" + index + "]";
-            ReactionAction action = action(object(actionValues.get(index), actionPath), actionPath, elements, targetSets);
-            if (action instanceof ReactionAction.AreaDamage area && area.targetSet().isPresent()
-                    && !targetSets.add(area.targetSet().get())) {
-                throw invalid(actionPath + ".target_set", "target_set 重复");
+        JsonObject sharedDisplay = json.has("display") ? requiredObject(json, "display", "$") : new JsonObject();
+        rejectUnknown(sharedDisplay, Set.of("translation_key", "show_reaction"), "$.display");
+        String translationKey = string(sharedDisplay, "translation_key", "$.display", false,
+                ReactionSpec.defaultTranslationKey(id));
+        boolean showReaction = bool(sharedDisplay, "show_reaction", true, "$.display");
+        JsonArray entries = requiredArray(json, "reactions", "$", 1, MAX_DIRECTIONS);
+        List<ReactionDirection> parsed = new ArrayList<>();
+        for (int index = 0; index < entries.size(); index++) {
+            String path = "$.reactions[" + index + "]";
+            JsonObject entry = object(entries.get(index), path);
+            rejectUnknown(entry, Set.of("bidirectional", "unidirectional", "color", "damage", "area",
+                    "mob_effects", "special", "elements"), path);
+            if (entry.has("bidirectional") == entry.has("unidirectional")) {
+                throw invalid(path, "必须且只能指定 bidirectional 或 unidirectional");
             }
-            actions.add(action);
+            ReactionDisplay display = new ReactionDisplay(displayColor(entry, new ReactionDisplay.Color(0xFFFFFF,
+                    ReactionDisplay.Reference.FIXED), path), showReaction);
+            List<ReactionAction> actions = groupedActions(entry, path, elements);
+            if (entry.has("bidirectional")) {
+                String groupPath = path + ".bidirectional";
+                JsonObject group = requiredObject(entry, "bidirectional", path);
+                rejectUnknown(group, Set.of("elements"), groupPath);
+                JsonArray positions = requiredArray(group, "elements", groupPath, 2, 2);
+                Position first = position(object(positions.get(0), groupPath + ".elements[0]"),
+                        groupPath + ".elements[0]", elements);
+                Position second = position(object(positions.get(1), groupPath + ".elements[1]"),
+                        groupPath + ".elements[1]", elements);
+                expand(parsed, first, second, minimum, conditions, display, actions, groupPath);
+                expand(parsed, second, first, minimum, conditions, display, actions, groupPath);
+            } else {
+                String groupPath = path + ".unidirectional";
+                JsonObject group = requiredObject(entry, "unidirectional", path);
+                rejectUnknown(group, Set.of("trigger", "aura"), groupPath);
+                Position trigger = position(requiredObject(group, "trigger", groupPath), groupPath + ".trigger", elements);
+                Position aura = position(requiredObject(group, "aura", groupPath), groupPath + ".aura", elements);
+                expand(parsed, trigger, aura, minimum, conditions, display, actions, groupPath);
+            }
         }
-        return new ReactionDirection(trigger, aura,
-                integer(json, "priority", defaultPriority, Integer.MIN_VALUE, Integer.MAX_VALUE, path, false),
-                minimum, ratios, conditions, display, actions);
+        LinkedHashSet<ResourceLocation> participants = new LinkedHashSet<>();
+        parsed.forEach(direction -> { participants.add(direction.trigger()); participants.add(direction.aura()); });
+        return new ReactionSpec(id, priority, participants, parsed, translationKey);
     }
 
-    private ReactionDisplay display(JsonObject json, String path) {
-        rejectUnknown(json, Set.of("color", "show_reaction"), path);
-        return new ReactionDisplay(color(json, "color", 0xFFFFFF, path), bool(json, "show_reaction", true, path));
+    private Position position(JsonObject json, String path, Map<ResourceLocation, ElementDefinition> elements) {
+        rejectUnknown(json, Set.of("element", "ratio"), path);
+        JsonElement value = json.get("element");
+        if (value == null) throw invalid(path + ".element", "缺少字段");
+        List<JsonElement> values = value.isJsonArray() ? value.getAsJsonArray().asList() : List.of(value);
+        if (values.isEmpty()) throw invalid(path + ".element", "数组不能为空");
+        LinkedHashSet<ResourceLocation> result = new LinkedHashSet<>();
+        for (int index = 0; index < values.size(); index++) {
+            ResourceLocation element = id(values.get(index), path + ".element[" + index + "]");
+            requireElement(element, elements, path + ".element[" + index + "]");
+            if (!result.add(element)) throw invalid(path + ".element", "重复元素 " + element);
+        }
+        return new Position(result, number(json, "ratio", 0, MAX_NUMBER, path, true));
+    }
+
+    private void expand(List<ReactionDirection> parsed, Position trigger, Position aura, double minimum,
+                        List<ReactionCondition> conditions, ReactionDisplay display, List<ReactionAction> actions,
+                        String path) {
+        if (trigger.elements().stream().anyMatch(aura.elements()::contains)) throw invalid(path, "两个匹配位置不能重叠");
+        for (ResourceLocation triggerId : trigger.elements()) {
+            for (ResourceLocation auraId : aura.elements()) {
+                if (parsed.size() >= MAX_DIRECTIONS) throw invalid(path, "展开方向数量超过 " + MAX_DIRECTIONS);
+                if (parsed.stream().anyMatch(direction -> direction.trigger().equals(triggerId) && direction.aura().equals(auraId))) {
+                    throw invalid(path, "重复展开方向 " + triggerId + " -> " + auraId);
+                }
+                parsed.add(new ReactionDirection(triggerId, auraId, minimum,
+                        new ReactionConsumption(trigger.ratio(), aura.ratio()), conditions, display, actions));
+            }
+        }
+    }
+
+    private List<ReactionAction> groupedActions(JsonObject json, String path,
+                                                Map<ResourceLocation, ElementDefinition> elements) {
+        List<ReactionAction> actions = new ArrayList<>();
+        for (String group : List.of("damage", "area", "mob_effects", "special", "elements")) {
+            JsonArray values = array(json, group, path, 0, MAX_ACTIONS, false);
+            Set<String> allowedTypes = switch (group) {
+                case "damage" -> Set.of("main_damage_bonus", "additional_damage", "schedule_damage");
+                case "elements" -> Set.of("attach_element", "modify_element");
+                default -> Set.of();
+            };
+            for (int index = 0; index < values.size(); index++) {
+                String actionPath = path + "." + group + "[" + index + "]";
+                if (actions.size() >= MAX_ACTIONS) throw invalid(actionPath, "组件总数超过 " + MAX_ACTIONS);
+                JsonObject component = object(values.get(index), actionPath);
+                if (allowedTypes.isEmpty()) {
+                    if (component.has("type")) throw invalid(actionPath + ".type", "类型由组件分组确定，不接受 type");
+                    component = component.deepCopy();
+                    component.addProperty("type", group.equals("mob_effects") ? "mob_effect" : group);
+                } else {
+                    String type = string(component, "type", actionPath, true, null);
+                    if (!allowedTypes.contains(type)) throw invalid(actionPath + ".type", "该分组不接受类型 " + type);
+                }
+                actions.add(action(component, actionPath, elements));
+            }
+        }
+        return List.copyOf(actions);
+    }
+
+    private ReactionDisplay.Color displayColor(JsonObject json, ReactionDisplay.Color fallback, String path) {
+        if (!json.has("color")) return fallback;
+        String value = string(json, "color", path, true, null);
+        if (value.equals("$trigger")) return new ReactionDisplay.Color(0, ReactionDisplay.Reference.TRIGGER);
+        if (value.equals("$aura")) return new ReactionDisplay.Color(0, ReactionDisplay.Reference.AURA);
+        return new ReactionDisplay.Color(color(json, "color", 0xFFFFFF, path), ReactionDisplay.Reference.FIXED);
     }
 
     private ReactionCondition condition(JsonObject json, String path) {
@@ -125,8 +171,8 @@ public final class ReactionDataParser {
         boolean inverted = bool(json, "inverted", false, path);
         return switch (type) {
             case "attacker_present" -> {
-                rejectUnknown(json, Set.of("type", "inverted", "value"), path);
-                yield new ReactionCondition.AttackerPresent(bool(json, "value", true, path), inverted);
+                rejectUnknown(json, Set.of("type", "value"), path);
+                yield new ReactionCondition.AttackerPresent(bool(json, "value", true, path));
             }
             case "attacker_entity" -> entityCondition(json, path, inverted, true);
             case "target_entity" -> entityCondition(json, path, inverted, false);
@@ -135,24 +181,20 @@ public final class ReactionDataParser {
                 Selector selector = selector(json, "damage_type", path);
                 yield new ReactionCondition.DamageType(selector.value(), selector.tag(), inverted);
             }
-            case "source_kind" -> {
-                rejectUnknown(json, Set.of("type", "inverted", "value"), path);
-                ReactionCondition.Source.Kind kind = switch (string(json, "value", path, true, null)) {
-                    case "melee" -> ReactionCondition.Source.Kind.MELEE;
-                    case "projectile" -> ReactionCondition.Source.Kind.PROJECTILE;
-                    case "magic" -> ReactionCondition.Source.Kind.MAGIC;
-                    case "environment" -> ReactionCondition.Source.Kind.ENVIRONMENT;
-                    default -> throw invalid(path + ".value", "未知来源类型");
-                };
-                yield new ReactionCondition.Source(kind, inverted);
-            }
             case "minimum_damage" -> {
                 rejectUnknown(json, Set.of("type", "inverted", "value"), path);
                 yield new ReactionCondition.MinimumDamage(number(json, "value", 0.0D, MAX_NUMBER, path, true), inverted);
             }
-            case "target_on_fire" -> booleanCondition(json, path, inverted, 0);
-            case "target_in_water" -> booleanCondition(json, path, inverted, 1);
-            case "target_is_boss" -> booleanCondition(json, path, inverted, 2);
+            case "target_state" -> {
+                rejectUnknown(json, Set.of("type", "state", "value"), path);
+                var state = switch (string(json, "state", path, true, null)) {
+                    case "on_fire" -> ReactionCondition.TargetState.State.ON_FIRE;
+                    case "in_water" -> ReactionCondition.TargetState.State.IN_WATER;
+                    case "frozen" -> ReactionCondition.TargetState.State.FROZEN;
+                    default -> throw invalid(path + ".state", "未知特殊状态");
+                };
+                yield new ReactionCondition.TargetState(state, bool(json, "value", true, path));
+            }
             default -> throw invalid(path + ".type", "未知条件类型 " + type);
         };
     }
@@ -165,18 +207,7 @@ public final class ReactionDataParser {
                 : new ReactionCondition.TargetEntity(selector.value(), selector.tag(), inverted);
     }
 
-    private ReactionCondition booleanCondition(JsonObject json, String path, boolean inverted, int kind) {
-        rejectUnknown(json, Set.of("type", "inverted", "value"), path);
-        boolean value = bool(json, "value", true, path);
-        return switch (kind) {
-            case 0 -> new ReactionCondition.TargetOnFire(value, inverted);
-            case 1 -> new ReactionCondition.TargetInWater(value, inverted);
-            default -> new ReactionCondition.TargetIsBoss(value, inverted);
-        };
-    }
-
-    private ReactionAction action(JsonObject json, String path, Map<ResourceLocation, ElementDefinition> elements,
-                                  Set<String> earlierTargetSets) {
+    private ReactionAction action(JsonObject json, String path, Map<ResourceLocation, ElementDefinition> elements) {
         String type = string(json, "type", path, true, null);
         ReactionFormula when = formula(json, "when", "1", path);
         return switch (type) {
@@ -188,51 +219,59 @@ public final class ReactionDataParser {
                 rejectUnknown(json, damageFields(Set.of("type", "when", "formula")), path);
                 yield new ReactionAction.AdditionalDamage(formulaValue(json, "formula", path), damageSettings(json, path, elements), when);
             }
-            case "area_damage" -> {
-                rejectUnknown(json, damageFields(Set.of("type", "when", "formula", "radius", "center",
-                        "include_original_target", "include_attacker", "max_targets", "falloff", "target_set")), path);
-                Optional<String> targetSet = optionalTargetSet(json, "target_set", path);
-                yield new ReactionAction.AreaDamage(number(json, "radius", 0.0D, MAX_RADIUS, path, true),
-                        formulaValue(json, "formula", path), damageSettings(json, path, elements),
-                        center(json, path), bool(json, "include_original_target", true, path),
-                        bool(json, "include_attacker", false, path),
-                        integer(json, "max_targets", MAX_TARGETS, 1, MAX_TARGETS, path, false),
-                        formulaValue(json, "falloff", "1", path), targetSet, when);
+            case "area" -> {
+                rejectUnknown(json, Set.of("type", "when", "radius", "damage", "attachment", "include_attacker", "max_targets"), path);
+                if (!json.has("damage") && !json.has("attachment")) throw invalid(path, "damage 和 attachment 至少指定一项");
+                Optional<ReactionAction.AreaDamageValue> damage = Optional.empty();
+                if (json.has("damage")) {
+                    JsonObject part = requiredObject(json, "damage", path);
+                    rejectUnknown(part, damageFields(Set.of("formula", "include_target")), path + ".damage");
+                    damage = Optional.of(new ReactionAction.AreaDamageValue(formulaValue(part, "formula", path + ".damage"),
+                            damageSettings(part, path + ".damage", elements), bool(part, "include_target", false, path + ".damage")));
+                }
+                Optional<ReactionAction.AreaAttachment> attachment = Optional.empty();
+                if (json.has("attachment")) {
+                    JsonObject part = requiredObject(json, "attachment", path);
+                    rejectUnknown(part, Set.of("element", "amount"), path + ".attachment");
+                    attachment = Optional.of(new ReactionAction.AreaAttachment(elementReference(part, "element", path + ".attachment", elements),
+                            restrictedFormulaValue(part, "amount", path + ".attachment",
+                                    Set.of("scale", "consumed_trigger", "consumed_aura", "distance", "radius"), BASIC_FUNCTIONS, false)));
+                }
+                yield new ReactionAction.Area(radius(json, path), damage, attachment,
+                        bool(json, "include_attacker", false, path), json.has("max_targets")
+                        ? Optional.of(integer(json, "max_targets", 0, 1, Integer.MAX_VALUE, path, true)) : Optional.empty(), when);
             }
             case "mob_effect" -> {
-                rejectUnknown(json, Set.of("type", "when", "target", "effect", "duration_ticks", "amplifier", "ambient", "visible"), path);
-                yield new ReactionAction.MobEffect(target(json, path), requiredId(json, "effect", path),
+                rejectUnknown(json, Set.of("type", "when", "effect", "duration_ticks", "level"), path);
+                yield new ReactionAction.MobEffect(requiredId(json, "effect", path),
                         integer(json, "duration_ticks", 0, 1, Integer.MAX_VALUE, path, true),
-                        integer(json, "amplifier", 0, 0, 255, path, false),
-                        bool(json, "ambient", false, path), bool(json, "visible", true, path), when);
+                        integer(json, "level", 0, 0, Integer.MAX_VALUE, path, false), when);
             }
-            case "ignite" -> {
-                rejectUnknown(json, Set.of("type", "when", "target", "duration_ticks"), path);
-                int ticks = integer(json, "duration_ticks", 0, 1, Integer.MAX_VALUE, path, true);
-                yield new ReactionAction.Ignite(target(json, path), ticks, when);
-            }
-            case "apply_freeze" -> {
-                rejectUnknown(json, Set.of("type", "when", "target", "duration_ticks"), path);
-                yield new ReactionAction.ApplyFreeze(target(json, path),
-                        integer(json, "duration_ticks", 0, 1, MAX_FREEZE_TICKS, path, true), when);
+            case "special" -> {
+                rejectUnknown(json, Set.of("type", "when", "entries"), path);
+                JsonArray entries = requiredArray(json, "entries", path, 1, MAX_ACTIONS);
+                List<ReactionAction.SpecialEntry> parsed = new ArrayList<>();
+                for (int index = 0; index < entries.size(); index++) {
+                    String entryPath = path + ".entries[" + index + "]";
+                    JsonObject entry = object(entries.get(index), entryPath);
+                    rejectUnknown(entry, Set.of("type", "duration_ticks"), entryPath);
+                    var kind = switch (string(entry, "type", entryPath, true, null)) {
+                        case "ignite" -> ReactionAction.SpecialEntry.Kind.IGNITE;
+                        case "freeze" -> ReactionAction.SpecialEntry.Kind.FREEZE;
+                        default -> throw invalid(entryPath + ".type", "未知特殊状态");
+                    };
+                    parsed.add(new ReactionAction.SpecialEntry(kind,
+                            integer(entry, "duration_ticks", 0, 1, Integer.MAX_VALUE, entryPath, true)));
+                }
+                yield new ReactionAction.Special(parsed, when);
             }
             case "schedule_damage" -> {
-                rejectUnknown(json, Set.of("type", "when", "id", "target", "duration_ticks",
+                rejectUnknown(json, Set.of("type", "when", "id", "duration_ticks",
                         "interval_ticks", "damage"), path);
-                yield new ReactionAction.ScheduleDamage(requiredId(json, "id", path), target(json, path),
+                yield new ReactionAction.ScheduleDamage(requiredId(json, "id", path),
                         integer(json, "duration_ticks", 0, 0, Integer.MAX_VALUE, path, true),
                         integer(json, "interval_ticks", 0, 1, Integer.MAX_VALUE, path, true),
                         stateDamage(requiredObject(json, "damage", path), path + ".damage", elements), when);
-            }
-            case "knockback" -> {
-                rejectUnknown(json, Set.of("type", "when", "target", "strength", "origin"), path);
-                ReactionAction.KnockbackOrigin origin = switch (string(json, "origin", path, false, "attacker")) {
-                    case "attacker" -> ReactionAction.KnockbackOrigin.ATTACKER;
-                    case "target" -> ReactionAction.KnockbackOrigin.TARGET;
-                    case "reaction" -> ReactionAction.KnockbackOrigin.REACTION;
-                    default -> throw invalid(path + ".origin", "未知击退原点");
-                };
-                yield new ReactionAction.Knockback(target(json, path), formulaValue(json, "strength", path), origin, when);
             }
             case "modify_element" -> {
                 rejectUnknown(json, Set.of("type", "when", "target", "element", "operation", "amount"), path);
@@ -251,30 +290,11 @@ public final class ReactionDataParser {
                 yield new ReactionAction.ModifyElement(target(json, path), elementReference(json, "element", path, elements),
                         operation, amount, when);
             }
-            case "spread_element" -> {
-                rejectUnknown(json, Set.of("type", "when", "center", "radius", "element", "amount",
-                        "include_original_target", "include_attacker", "max_targets", "respect_attachment_cooldown",
-                        "source_target_set"), path);
-                Optional<String> sourceSet = optionalTargetSet(json, "source_target_set", path);
-                if (sourceSet.isPresent() && !earlierTargetSets.contains(sourceSet.get())) {
-                    throw invalid(path + ".source_target_set", "必须引用更早的 area_damage.target_set");
-                }
-                yield new ReactionAction.SpreadElement(center(json, path),
-                        number(json, "radius", 0.0D, MAX_RADIUS, path, true),
-                        elementReference(json, "element", path, elements), formulaValue(json, "amount", path),
-                        bool(json, "include_original_target", false, path), bool(json, "include_attacker", false, path),
-                        integer(json, "max_targets", MAX_TARGETS, 1, MAX_TARGETS, path, false),
-                        bool(json, "respect_attachment_cooldown", true, path), sourceSet, when);
-            }
             case "attach_element" -> {
-                rejectUnknown(json, Set.of("type", "when", "target", "element", "amount", "duration_ticks"), path);
+                rejectUnknown(json, Set.of("type", "when", "element", "amount"), path);
                 ResourceLocation element = requiredId(json, "element", path);
                 requireElement(element, elements, path + ".element");
-                Optional<Integer> duration = json.has("duration_ticks")
-                        ? Optional.of(integer(json, "duration_ticks", 0, 1, Integer.MAX_VALUE, path, true))
-                        : Optional.empty();
-                yield new ReactionAction.AttachElement(target(json, path), element,
-                        formulaValue(json, "amount", path), duration, when);
+                yield new ReactionAction.AttachElement(element, formulaValue(json, "amount", path), when);
             }
             default -> throw invalid(path + ".type", "未知动作类型 " + type);
         };
@@ -284,27 +304,23 @@ public final class ReactionDataParser {
                                                           Map<ResourceLocation, ElementDefinition> elements) {
         return new ReactionAction.DamageSettings(
                 json.has("damage_type") ? requiredId(json, "damage_type", path) : ReactionAction.DEFAULT_DAMAGE_TYPE,
-                json.has("resistance_element") ? Optional.of(elementReference(json, "resistance_element", path, elements)) : Optional.empty(),
-                bool(json, "bypass_armor", false, path), bool(json, "bypass_invulnerability", false, path),
-                bool(json, "allow_element_application", false, path), bool(json, "allow_reactions", false, path));
+                json.has("resistance_element") ? Optional.of(elementReference(json, "resistance_element", path, elements)) : Optional.empty());
     }
 
     private ReactionAction.StateDamage stateDamage(JsonObject json, String path,
                                                     Map<ResourceLocation, ElementDefinition> elements) {
-        rejectUnknown(json, Set.of("formula", "damage_type", "resistance_element", "color"), path);
+        rejectUnknown(json, Set.of("formula", "damage_type", "resistance_element"), path);
         return new ReactionAction.StateDamage(
-                formulaValue(json, "formula", path),
-                json.has("damage_type") ? requiredId(json, "damage_type", path) : ReactionAction.DEFAULT_DAMAGE_TYPE,
+                restrictedFormulaValue(json, "formula", path, DOT_VARIABLES, FUNCTIONS, true),
+                json.has("damage_type") ? requiredId(json, "damage_type", path) : ReactionAction.DEFAULT_DOT_DAMAGE_TYPE,
                 json.has("resistance_element")
                         ? Optional.of(elementReference(json, "resistance_element", path, elements))
-                        : Optional.empty(),
-                json.has("color") ? Optional.of(color(json, "color", 0xFFFFFF, path)) : Optional.empty());
+                        : Optional.empty());
     }
 
     private static Set<String> damageFields(Set<String> base) {
         Set<String> fields = new HashSet<>(base);
-        fields.addAll(Set.of("damage_type", "resistance_element", "bypass_armor", "bypass_invulnerability",
-                "allow_element_application", "allow_reactions"));
+        fields.addAll(Set.of("damage_type", "resistance_element"));
         return fields;
     }
 
@@ -326,16 +342,29 @@ public final class ReactionDataParser {
         };
     }
 
-    private ReactionAction.Center center(JsonObject json, String path) {
-        return switch (string(json, "center", path, false, "target")) {
-            case "target" -> ReactionAction.Center.TARGET;
-            case "attacker" -> ReactionAction.Center.ATTACKER;
-            default -> throw invalid(path + ".center", "未知中心");
-        };
+    private ReactionAction.Formula radius(JsonObject json, String path) {
+        JsonElement value = json.get("radius");
+        if (value == null) throw invalid(path + ".radius", "缺少字段");
+        if (value.isJsonPrimitive() && value.getAsJsonPrimitive().isNumber()) {
+            double number = value.getAsDouble();
+            if (!Double.isFinite(number)) throw invalid(path + ".radius", "必须为有限数字");
+            return new ReactionAction.Formula(value.getAsString(), ignored -> number);
+        }
+        return restrictedFormulaValue(json, "radius", path, Set.of("scale"), BASIC_FUNCTIONS, false);
     }
 
     private ReactionAction.Formula formulaValue(JsonObject json, String field, String path) {
         return formulaValue(json, field, null, path);
+    }
+
+    private ReactionAction.Formula restrictedFormulaValue(JsonObject json, String field, String path,
+                                                           Set<String> variables, Set<String> functions, boolean comparisons) {
+        String source = string(json, field, path, true, null);
+        try {
+            return new ReactionAction.Formula(source, DamageFormulaParser.parseReaction(source, variables, functions, comparisons));
+        } catch (DamageFormulaParser.FormulaParseException exception) {
+            throw invalid(path + "." + field, exception.getMessage());
+        }
     }
 
     private ReactionAction.Formula formulaValue(JsonObject json, String field, String fallback, String path) {
@@ -356,13 +385,6 @@ public final class ReactionDataParser {
         }
     }
 
-    private Optional<String> optionalTargetSet(JsonObject json, String field, String path) {
-        if (!json.has(field)) return Optional.empty();
-        String value = string(json, field, path, true, null);
-        if (!TARGET_SET.matcher(value).matches()) throw invalid(path + "." + field, "名称格式无效");
-        return Optional.of(value);
-    }
-
     private Selector selector(JsonObject json, String valueField, String path) {
         boolean hasValue = json.has(valueField);
         boolean hasTag = json.has("tag");
@@ -373,7 +395,7 @@ public final class ReactionDataParser {
 
     private static void requireElement(ResourceLocation id, Map<ResourceLocation, ElementDefinition> elements, String path) {
         ElementDefinition element = elements.get(id);
-        if (element == null || !element.enabled()) throw invalid(path, "引用不存在或禁用的元素 " + id);
+        if (element == null) throw invalid(path, "引用不存在的元素 " + id);
     }
 
     private static JsonObject object(JsonElement value, String path) {
@@ -491,6 +513,7 @@ public final class ReactionDataParser {
     }
 
     private record Selector(Optional<ResourceLocation> value, Optional<ResourceLocation> tag) {}
+    private record Position(Set<ResourceLocation> elements, double ratio) {}
     private static final class InvalidData extends RuntimeException {
         private InvalidData(String message) { super(message); }
     }

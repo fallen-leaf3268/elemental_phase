@@ -32,12 +32,20 @@ public final class ReactionRuntimeController {
     private ReactionRuntimeController() {
     }
 
+    public boolean isFrozen(ServerLevel level, LivingEntity target, long now) {
+        Map<UUID, EntityRuntime> entries = active.get(level);
+        EntityRuntime runtime = entries == null || target == null ? null : entries.get(target.getUUID());
+        return runtime != null && runtime.freeze() != null && runtime.freeze().active(now);
+    }
+
     public void applyFreeze(ServerLevel level, LivingEntity target, int durationTicks, long now) {
         if (!valid(level, target)) return;
         EntityRuntime runtime = runtime(level, target);
-        runtime.freeze(runtime.freeze() == null
+        FrozenReactionState incoming = runtime.freeze() == null
                 ? FrozenReactionState.create(now, durationTicks)
-                : runtime.freeze().refresh(now, durationTicks));
+                : runtime.freeze().refresh(now, durationTicks);
+        if (incoming == runtime.freeze()) return;
+        runtime.freeze(incoming);
         applyFreezeMovement(target);
         clearHorizontalMomentum(target);
         send(target, runtime.freeze(), now);
@@ -45,24 +53,33 @@ public final class ReactionRuntimeController {
 
     public void scheduleDamage(ServerLevel level, LivingEntity target, ResourceLocation taskId,
                                ResourceLocation reactionId, double scale, int durationTicks, int intervalTicks,
-                               ReactionAction.StateDamage damage, ElementSourceSnapshot source, long now) {
+                               ReactionAction.StateDamage damage, ElementSourceSnapshot source,
+                               ReactionAction.StateSnapshot snapshot, long now) {
         if (!valid(level, target)) return;
         EntityRuntime runtime = runtime(level, target);
-        ScheduledDamageState current = runtime.task(taskId);
-        ScheduledDamageState.Application application;
-        if (current == null) {
-            application = new ScheduledDamageState.Application(
-                    ScheduledDamageState.create(reactionId, scale, now, durationTicks, intervalTicks, damage, source),
-                    ScheduledDamageState.ApplyResult.CREATED);
-        } else {
-            application = ScheduledDamageState.apply(current, reactionId, scale, now,
-                    durationTicks, intervalTicks, damage, source);
-        }
-        if (application.result() == ScheduledDamageState.ApplyResult.IGNORED_LOWER) return;
-        runtime.task(taskId, application.state());
-        executeIfDue(level, target, runtime, taskId, application.state(), now);
-        runtime.removeExpiredTasks(now);
+        var incoming = ScheduledDamageState.create(taskId, reactionId, scale, now, durationTicks, intervalTicks, damage, source, snapshot);
+        applyScheduled(runtime, incoming, state -> ScheduledReactionDamageExecutor.execute(level, target, state),
+                () -> valid(level, target));
         if (!valid(level, target)) remove(target);
+    }
+
+    static ScheduledDamageState.ApplyResult applyScheduled(EntityRuntime runtime, ScheduledDamageState incoming,
+            java.util.function.Consumer<ScheduledDamageState> firstHit, java.util.function.BooleanSupplier targetValid) {
+        ScheduledDamageState current = runtime.task(incoming.effectId());
+        if (current != null && current.expiredAfter(incoming.startedAt())) current = null;
+        var decision = current == null
+                ? new ScheduledDamageState.Application(incoming, ScheduledDamageState.ApplyResult.CREATED)
+                : ScheduledDamageState.apply(current, incoming);
+        firstHit.accept(incoming);
+        if (!targetValid.getAsBoolean()) {
+            runtime.clear();
+            return decision.result();
+        }
+        if (decision.result() == ScheduledDamageState.ApplyResult.IGNORED_LOWER) return decision.result();
+        runtime.task(incoming.effectId(), decision.state());
+        runtime.clearRun(incoming.effectId());
+        if (incoming.durationTicks() == 0) runtime.removeTask(incoming.effectId());
+        return decision.result();
     }
 
     public void tickLevelEnd(ServerLevel level, long now) {
@@ -186,8 +203,7 @@ public final class ReactionRuntimeController {
 
     private static FrozenStateSyncPacket packet(LivingEntity entity, FrozenReactionState state, long now) {
         return new FrozenStateSyncPacket(entity.getId(), true,
-                Math.min(FrozenStateSyncPacket.MAX_TICKS, state.durationTicks()),
-                Math.min(FrozenStateSyncPacket.MAX_TICKS, state.remainingTicks(now)));
+                state.durationTicks(), state.remainingTicks(now));
     }
 
     static final class EntityRuntime {
@@ -214,6 +230,10 @@ public final class ReactionRuntimeController {
         void task(ResourceLocation id, ScheduledDamageState task) {
             tasks.put(id, task);
         }
+
+        void clearRun(ResourceLocation id) { lastRuns.remove(id); }
+
+        void removeTask(ResourceLocation id) { tasks.remove(id); lastRuns.remove(id); }
 
         long lastRun(ResourceLocation id) {
             return lastRuns.getOrDefault(id, Long.MIN_VALUE);

@@ -1,1 +1,1 @@
-{"selector":{"type":"entity_id","id":"minecraft:drowned"},"permanent_elements":{"elemental_phase:water":{"amount":8.0}},"resistances":{"elemental_phase:water":0.5},"intrinsic_attack":{"element":"elemental_phase:water","base_amount":1.0},"element_strength":1.0}
+{"selector":{"type":"entity_id","id":"minecraft:drowned"},"permanent_elements":[{"element":"elemental_phase:water","amount":8.0}],"intrinsic_attack":{"element":"elemental_phase:water","base_amount":1.0},"resistances":[{"element":"elemental_phase:water","value":0.5}]}

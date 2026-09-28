@@ -1,6 +1,5 @@
 package com.elementalphase.data;
 
-import com.elementalphase.data.model.ElementApplicationPolicy;
 import com.elementalphase.data.model.ElementAttachmentPolicy;
 import com.elementalphase.data.model.ElementDefinition;
 import com.elementalphase.data.model.ElementDisplayDefinition;
@@ -24,13 +23,13 @@ class ElementDataSnapshotTest {
             elements.put(id, definition(id));
         }
 
-        ElementDataSnapshot snapshot = new ElementDataSnapshot(elements, Map.of(), null, List.of(), List.of());
+        ElementDataSnapshot snapshot = new ElementDataSnapshot(elements, Map.of(), null, List.of());
 
         assertEquals(elements.keySet().stream().sorted().toList(), new ArrayList<>(snapshot.elements().keySet()));
     }
 
     private static ElementDefinition definition(ResourceLocation id) {
-        return new ElementDefinition(id, true, ElementApplicationPolicy.DEFAULT,
+        return new ElementDefinition(id,
                 ElementAttachmentPolicy.DEFAULT,
                 new ElementDisplayDefinition("element.test." + id.getPath(), 0xFFFFFF, true, 0, Optional.empty()));
     }

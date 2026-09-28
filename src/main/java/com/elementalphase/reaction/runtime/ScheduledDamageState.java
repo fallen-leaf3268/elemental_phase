@@ -6,11 +6,13 @@ import net.minecraft.resources.ResourceLocation;
 
 import java.util.Objects;
 
-public record ScheduledDamageState(ResourceLocation reactionId, double scale, long startedAt, long expiresAt,
+public record ScheduledDamageState(ResourceLocation effectId, ResourceLocation reactionId, double scale, long startedAt, long expiresAt,
                                    int durationTicks, int intervalTicks, ReactionAction.StateDamage damage,
-                                   ElementSourceSnapshot source) {
+                                   ElementSourceSnapshot source, ReactionAction.StateSnapshot snapshot) {
     public ScheduledDamageState {
         Objects.requireNonNull(reactionId);
+        Objects.requireNonNull(effectId);
+        Objects.requireNonNull(snapshot);
         Objects.requireNonNull(damage);
         Objects.requireNonNull(source);
         if (!Double.isFinite(scale) || scale < 0.0D || scale > 1_000_000.0D) {
@@ -21,26 +23,24 @@ public record ScheduledDamageState(ResourceLocation reactionId, double scale, lo
         if (expiresAt < startedAt) throw new IllegalArgumentException("Invalid scheduled deadline");
     }
 
-    public static ScheduledDamageState create(ResourceLocation reactionId, double scale, long now,
+    public static ScheduledDamageState create(ResourceLocation effectId, ResourceLocation reactionId, double scale, long now,
                                               int durationTicks, int intervalTicks,
-                                              ReactionAction.StateDamage damage, ElementSourceSnapshot source) {
-        return new ScheduledDamageState(reactionId, scale, now, deadline(now, durationTicks),
-                durationTicks, intervalTicks, damage, source);
+                                              ReactionAction.StateDamage damage, ElementSourceSnapshot source,
+                                              ReactionAction.StateSnapshot snapshot) {
+        return new ScheduledDamageState(effectId, reactionId, scale, now, deadline(now, durationTicks),
+                durationTicks, intervalTicks, damage, source, snapshot);
     }
 
-    public static Application apply(ScheduledDamageState current, ResourceLocation reactionId, double scale,
-                                    long now, int durationTicks, int intervalTicks,
-                                    ReactionAction.StateDamage damage, ElementSourceSnapshot source) {
+    public static Application apply(ScheduledDamageState current, ScheduledDamageState incoming) {
         Objects.requireNonNull(current);
-        int comparison = Double.compare(scale, current.scale);
+        int comparison = Double.compare(incoming.scale(), current.scale);
         if (comparison < 0) return new Application(current, ApplyResult.IGNORED_LOWER);
-        ScheduledDamageState accepted = create(reactionId, scale, now, durationTicks, intervalTicks, damage, source);
-        return new Application(accepted,
+        return new Application(incoming,
                 comparison == 0 ? ApplyResult.REFRESHED_EQUAL : ApplyResult.REPLACED_HIGHER);
     }
 
     public boolean due(long now, long lastRunTick) {
-        if (lastRunTick == now || now < startedAt || now > expiresAt) return false;
+        if (lastRunTick == now || now <= startedAt || now > expiresAt) return false;
         return (now - startedAt) % intervalTicks == 0L;
     }
 

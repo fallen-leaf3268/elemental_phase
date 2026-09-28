@@ -18,7 +18,7 @@ public record ReactionRequest(ElementalState state, ResourceLocation trigger, do
                               double targetHealth, double targetMaxHealth, double targetResistance,
                               Optional<ElementSourceSnapshot> source,
                               Predicate<ReactionCondition> conditionEvaluator,
-                              ReactionChainGuard guard) {
+                              ReactionChainGuard guard, boolean hasOriginalHit) {
     public ReactionRequest {
         if (state == null || trigger == null || elementDefinition == null || index == null || elements == null) {
             throw new IllegalArgumentException("Missing reaction request data");

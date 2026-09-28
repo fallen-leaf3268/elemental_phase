@@ -12,14 +12,14 @@ import static org.junit.jupiter.api.Assertions.*;
 
 class AttachElementParsingTest {
     @Test
-    void parsesReactionProductAndValidatesPermission() {
+    void parsesVirtualAttachmentAndRejectsUnknownElements() {
         var report = new ElementDataParser().parseLenient(resources(true));
         assertTrue(report.errors().isEmpty(), report.errors().toString());
         var reaction = report.snapshot().reactions().get(id("freeze"));
         var action = assertInstanceOf(ReactionAction.AttachElement.class,
                 reaction.directions().get(0).actions().get(0));
         assertEquals(id("frozen"), action.element());
-        assertEquals(100, action.durationTicks().orElseThrow());
+        assertEquals("scale", action.amount().source());
         assertTrue(ElementDataRuntimeValidator.validate(report).errors().isEmpty());
 
         var denied = ElementDataRuntimeValidator.validate(new ElementDataParser().parseLenient(resources(false)));
@@ -30,14 +30,15 @@ class AttachElementParsingTest {
     private static Map<ResourceLocation, com.google.gson.JsonElement> resources(boolean allowed) {
         Map<ResourceLocation, com.google.gson.JsonElement> values = new LinkedHashMap<>();
         values.put(resource("elements/fire.json"), JsonParser.parseString("{}"));
-        values.put(resource("elements/frozen.json"), JsonParser.parseString(
-                "{\"application\":{\"from_attack\":false,\"from_reaction\":" + allowed + "}," +
-                        "\"attachment\":{\"retain_after_attack\":false}}"));
+        if (allowed) {
+            values.put(resource("elements/frozen.json"), JsonParser.parseString(
+                    "{\"attachment\":{\"mode\":\"virtual\"}}"));
+        }
         values.put(resource("reactions/freeze.json"), JsonParser.parseString("""
-                {"elements":["test:fire","test:frozen"],"directions":[{
-                "trigger":"test:fire","aura":"test:frozen","consumption":{"trigger":1,"aura":1},
-                "display":{},"actions":[{"type":"attach_element","element":"test:frozen",
-                "amount":"scale","duration_ticks":100}]}]}
+                {"reactions":[{"unidirectional":{"trigger":{"element":"test:fire","ratio":1},
+                "aura":{"element":"test:frozen","ratio":1}},
+                "elements":[{"type":"attach_element","element":"test:frozen",
+                "amount":"scale"}]}]}
                 """));
         return values;
     }

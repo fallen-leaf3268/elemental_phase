@@ -46,8 +46,11 @@ public final class ReactionEffectExecutor {
                     if (definition == null) return;
                     boolean createsElement = effect.operation() == ReactionEffectDefinition.ElementOperation.ADD
                             || effect.operation() == ReactionEffectDefinition.ElementOperation.SET;
-                    if (createsElement && !definition.application().fromReaction()) return;
                     int duration = definition.attachment().durationTicks();
+                    if (createsElement && definition.attachment().virtual()) {
+                        state.applyElement(definition, effect.amount(), level.getGameTime(), duration, true, null);
+                        return;
+                    }
                     state.applyEffect(effect.element(), effect.operation().name().toLowerCase(java.util.Locale.ROOT), effect.amount(),
                             level.getGameTime(), duration, definition.attachment().cooldownTicks(),
                             definition.attachment().maxAmount(), true);

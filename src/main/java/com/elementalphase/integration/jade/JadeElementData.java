@@ -27,6 +27,7 @@ public final class JadeElementData {
                         && Double.isFinite(entry.getValue())
                         && entry.getValue() > 0.0D)
                 .filter(entry -> definitions.containsKey(entry.getKey()))
+                .filter(entry -> !definitions.get(entry.getKey()).attachment().virtual())
                 .filter(entry -> definitions.get(entry.getKey()).display().visibleInJade())
                 .map(entry -> {
                     var display = definitions.get(entry.getKey()).display();

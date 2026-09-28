@@ -5,7 +5,7 @@ import net.minecraft.resources.ResourceLocation;
 import java.util.List;
 import java.util.Objects;
 
-public record ReactionDirection(ResourceLocation trigger, ResourceLocation aura, int priority,
+public record ReactionDirection(ResourceLocation trigger, ResourceLocation aura,
                                 double minimumScale, ReactionConsumption consumption,
                                 List<ReactionCondition> conditions, ReactionDisplay display,
                                 List<ReactionAction> actions) {
