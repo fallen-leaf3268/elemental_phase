@@ -1,5 +1,7 @@
 package com.elementalphase.enchantment;
 
+import com.electronwill.nightconfig.core.CommentedConfig;
+import com.elementalphase.config.ElementalPhaseServerConfig;
 import net.minecraft.core.registries.Registries;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.core.RegistryAccess;
@@ -201,6 +203,7 @@ class ElementEnchantmentDataTest {
     void acquisitionUsesActiveServerDataWhileNamesUseSynchronizedElementTranslations() {
         var data = com.elementalphase.data.ElementDataManager.baseSnapshot();
         var catalog = ElementBookCatalog.clientElements();
+        var colors = ElementBookCatalog.clientColors();
         var damageRegistry = new net.minecraft.core.MappedRegistry<net.minecraft.world.damagesource.DamageType>(
                 Registries.DAMAGE_TYPE, com.mojang.serialization.Lifecycle.stable());
         var registries = new RegistryAccess.ImmutableRegistryAccess(List.of(damageRegistry));
@@ -209,7 +212,8 @@ class ElementEnchantmentDataTest {
                     id("elemental_phase:elemental_phase/elements/fire.json"),
                     com.google.gson.JsonParser.parseString("{}"))).snapshot();
             com.elementalphase.data.ElementDataManager.replace(snapshot, registries);
-            ElementBookCatalog.replaceClient(Map.of(FIRE, "custom.name.fire", CUSTOM, "custom.name.steam"));
+            ElementBookCatalog.replaceClient(Map.of(FIRE, "custom.name.fire", CUSTOM, "custom.name.steam"),
+                    Map.of(FIRE, 0xFF5500, CUSTOM, 0x7EE7C4));
             var fire = com.elementalphase.registry.ModEnchantments.forElement(FIRE).orElseThrow();
             var custom = com.elementalphase.registry.ModEnchantments.forElement(CUSTOM).orElseThrow();
             assertTrue(fire.isDiscoverable());
@@ -221,11 +225,15 @@ class ElementEnchantmentDataTest {
             var elementName = (Component) title.getArgs()[0];
             assertEquals("custom.name.steam",
                     ((net.minecraft.network.chat.contents.TranslatableContents) elementName.getContents()).getKey());
+            assertEquals(0x7EE7C4, custom.getFullname(1).getStyle().getColor().getValue());
+            ElementBookCatalog.replaceClient(catalog);
+            assertEquals(net.minecraft.ChatFormatting.GRAY.getColor(),
+                    custom.getFullname(1).getStyle().getColor().getValue());
             com.elementalphase.data.ElementDataManager.replace(com.elementalphase.data.ElementDataSnapshot.empty(), registries);
             assertFalse(fire.isDiscoverable());
             assertFalse(fire.isTradeable());
         } finally {
-            ElementBookCatalog.replaceClient(catalog);
+            ElementBookCatalog.replaceClient(catalog, colors);
             com.elementalphase.data.ElementDataManager.replace(data, registries);
         }
     }
@@ -247,6 +255,59 @@ class ElementEnchantmentDataTest {
             assertFalse(event.getEntries().contains(ElementEnchantmentData.createBook(CUSTOM)));
         } finally {
             ElementBookCatalog.replaceClient(original);
+        }
+    }
+
+    @Test
+    void elementNamesUseConfiguredRgbOnBooksAndWeapons() {
+        var data = com.elementalphase.data.ElementDataManager.baseSnapshot();
+        var catalog = ElementBookCatalog.clientElements();
+        var damageRegistry = new net.minecraft.core.MappedRegistry<net.minecraft.world.damagesource.DamageType>(
+                Registries.DAMAGE_TYPE, com.mojang.serialization.Lifecycle.stable());
+        var registries = new RegistryAccess.ImmutableRegistryAccess(List.of(damageRegistry));
+        try {
+            var snapshot = new com.elementalphase.data.ElementDataParser().parseLenient(Map.of(
+                    id("example:elemental_phase/elements/steam.json"),
+                    com.google.gson.JsonParser.parseString("{\"display\":{\"color\":\"#7EE7C4\"}}"))).snapshot();
+            com.elementalphase.data.ElementDataManager.replace(snapshot, registries);
+            ElementBookCatalog.replaceClient(Map.of());
+            ItemStack book = ElementEnchantmentData.createBook(CUSTOM);
+            ItemStack weapon = new ItemStack(Items.DIAMOND_SWORD);
+            ElementEnchantmentData.setElement(weapon, CUSTOM);
+            for (ItemStack stack : List.of(book, weapon)) {
+                var enchantment = EnchantmentHelper.getEnchantments(stack).keySet().iterator().next();
+                assertEquals(0x7EE7C4, enchantment.getFullname(1).getStyle().getColor().getValue());
+                assertEquals(0x7EE7C4, enchantment.getFullname(3).getStyle().getColor().getValue());
+            }
+            assertEquals(net.minecraft.ChatFormatting.GRAY.getColor(),
+                    Enchantments.SHARPNESS.getFullname(1).getStyle().getColor().getValue());
+        } finally {
+            ElementBookCatalog.replaceClient(catalog);
+            com.elementalphase.data.ElementDataManager.replace(data, registries);
+        }
+    }
+
+    @Test
+    void defaultElementColorIsWhiteWhileMissingElementsStayGray() {
+        var data = com.elementalphase.data.ElementDataManager.baseSnapshot();
+        var catalog = ElementBookCatalog.clientElements();
+        var damageRegistry = new net.minecraft.core.MappedRegistry<net.minecraft.world.damagesource.DamageType>(
+                Registries.DAMAGE_TYPE, com.mojang.serialization.Lifecycle.stable());
+        var registries = new RegistryAccess.ImmutableRegistryAccess(List.of(damageRegistry));
+        try {
+            var snapshot = new com.elementalphase.data.ElementDataParser().parseLenient(Map.of(
+                    id("elemental_phase:elemental_phase/elements/fire.json"),
+                    com.google.gson.JsonParser.parseString("{}"))).snapshot();
+            com.elementalphase.data.ElementDataManager.replace(snapshot, registries);
+            ElementBookCatalog.replaceClient(Map.of());
+            var fire = com.elementalphase.registry.ModEnchantments.forElement(FIRE).orElseThrow();
+            var missing = com.elementalphase.registry.ModEnchantments.forElement(CUSTOM).orElseThrow();
+            assertEquals(0xFFFFFF, fire.getFullname(1).getStyle().getColor().getValue());
+            assertEquals(net.minecraft.ChatFormatting.GRAY.getColor(),
+                    missing.getFullname(1).getStyle().getColor().getValue());
+        } finally {
+            ElementBookCatalog.replaceClient(catalog);
+            com.elementalphase.data.ElementDataManager.replace(data, registries);
         }
     }
 
@@ -276,6 +337,39 @@ class ElementEnchantmentDataTest {
     }
 
     @Test
+    void tooltipKeepsVanillaBookTitleAndColoredElementName() {
+        var catalog = ElementBookCatalog.clientElements();
+        var colors = ElementBookCatalog.clientColors();
+        try {
+            ElementBookCatalog.replaceClient(Map.of(FIRE, "element.elemental_phase.fire"),
+                    Map.of(FIRE, 0xFF7A00));
+            ItemStack book = ElementEnchantmentData.createBook(FIRE);
+            Component title = book.getHoverName().copy().withStyle(net.minecraft.ChatFormatting.YELLOW);
+            Component enchantmentName = com.elementalphase.registry.ModEnchantments.forElement(FIRE)
+                    .orElseThrow().getFullname(1);
+            var lines = new ArrayList<>(List.of(title, enchantmentName));
+            var event = new net.minecraftforge.event.entity.player.ItemTooltipEvent(book, null, lines,
+                    net.minecraft.world.item.TooltipFlag.Default.NORMAL);
+            com.elementalphase.client.ClientElementBooks.tooltip(event);
+            assertSame(title, lines.get(0));
+            assertEquals("item.minecraft.enchanted_book",
+                    ((net.minecraft.network.chat.contents.TranslatableContents) lines.get(0).getContents()).getKey());
+            assertSame(enchantmentName, lines.get(1));
+            assertEquals(0xFF7A00, lines.get(1).getStyle().getColor().getValue());
+            assertEquals(3, lines.size());
+            assertEquals("1", ((net.minecraft.network.chat.contents.TranslatableContents)
+                    lines.get(2).getContents()).getArgs()[0]);
+            ElementBookCatalog.replaceClient(Map.of());
+            com.elementalphase.client.ClientElementBooks.tooltip(event);
+            assertSame(title, lines.get(0));
+            assertEquals("tooltip.elemental_phase.missing_element",
+                    ((net.minecraft.network.chat.contents.TranslatableContents) lines.get(2).getContents()).getKey());
+        } finally {
+            ElementBookCatalog.replaceClient(catalog, colors);
+        }
+    }
+
+    @Test
     void creativeBookCategoryUsesCurrentCatalogAfterElementReload() {
         var original = ElementBookCatalog.clientElements();
         try {
@@ -291,6 +385,220 @@ class ElementEnchantmentDataTest {
         } finally {
             ElementBookCatalog.replaceClient(original);
         }
+    }
+
+    @Test
+    void descriptionUsesConfiguredAmountAndElementColorOnBooksAndWeapons() throws ReflectiveOperationException {
+        var catalog = ElementBookCatalog.clientElements();
+        var colors = ElementBookCatalog.clientColors();
+        var originalConfig = configureEnchantmentAmount(2.5D);
+        try {
+            ElementBookCatalog.replaceClient(Map.of(CUSTOM, "custom.name.steam"), Map.of(CUSTOM, 0x7EE7C4));
+            ItemStack book = ElementEnchantmentData.createBook(CUSTOM);
+            ItemStack weapon = new ItemStack(Items.DIAMOND_SWORD);
+            ElementEnchantmentData.setElement(weapon, CUSTOM);
+            for (ItemStack stack : List.of(book, weapon)) {
+                Component title = stack.getHoverName();
+                Component name = com.elementalphase.registry.ModEnchantments.forElement(CUSTOM)
+                        .orElseThrow().getFullname(1);
+                var lines = new ArrayList<>(List.of(title, name));
+                var event = new net.minecraftforge.event.entity.player.ItemTooltipEvent(stack, null, lines,
+                        net.minecraft.world.item.TooltipFlag.Default.NORMAL);
+                com.elementalphase.client.ClientElementBooks.tooltip(event);
+                assertEquals(3, lines.size());
+                assertSame(title, lines.get(0));
+                var description = assertInstanceOf(net.minecraft.network.chat.contents.TranslatableContents.class,
+                        lines.get(2).getContents());
+                assertEquals("enchantment.elemental_phase.element_description", description.getKey());
+                assertEquals("2.5", description.getArgs()[0]);
+                assertEquals(net.minecraft.ChatFormatting.GRAY.getColor(),
+                        lines.get(2).getStyle().getColor().getValue());
+                Component elementLabel = (Component) description.getArgs()[1];
+                assertEquals(0x7EE7C4, elementLabel.getStyle().getColor().getValue());
+                assertEquals("custom.name.steam",
+                        ((net.minecraft.network.chat.contents.TranslatableContents) elementLabel.getContents()).getKey());
+                var amount = (net.minecraftforge.common.ForgeConfigSpec.DoubleValue)
+                        ElementalPhaseServerConfig.SPEC.getValues().get(List.of("enchantments", "base_attachment_amount"));
+                amount.set(4.0D);
+                com.elementalphase.client.ClientElementBooks.tooltip(event);
+                assertEquals(3, lines.size());
+                assertEquals("4", ((net.minecraft.network.chat.contents.TranslatableContents)
+                        lines.get(2).getContents()).getArgs()[0]);
+                amount.set(2.5D);
+            }
+        } finally {
+            ElementalPhaseServerConfig.SPEC.setConfig(originalConfig);
+            ElementBookCatalog.replaceClient(catalog, colors);
+        }
+    }
+
+    @Test
+    void builtInElementTranslationsAreCompleteNamesWithoutRepeatedSuffixes() throws IOException {
+        var expected = Map.of(
+                "zh_cn", Map.of("fire", "火元素", "water", "水元素", "ice", "冰元素",
+                        "lightning", "雷元素", "wind", "风元素"),
+                "en_us", Map.of("fire", "Fire Element", "water", "Water Element", "ice", "Ice Element",
+                        "lightning", "Lightning Element", "wind", "Wind Element"));
+        for (var locale : expected.entrySet()) {
+            var resource = "/assets/elemental_phase/lang/" + locale.getKey() + ".json";
+            try (var stream = ElementEnchantmentDataTest.class.getResourceAsStream(resource)) {
+                assertNotNull(stream, resource);
+                var translations = com.google.gson.JsonParser.parseReader(new java.io.InputStreamReader(
+                        stream, java.nio.charset.StandardCharsets.UTF_8)).getAsJsonObject();
+                for (var element : locale.getValue().entrySet()) {
+                    assertEquals(element.getValue(), translations.get("element.elemental_phase." + element.getKey())
+                            .getAsString(), resource + ": " + element.getKey());
+                }
+                String name = translations.get("element.elemental_phase.fire").getAsString();
+                String enchantment = translations.get("enchantment.elemental_phase.element_name").getAsString();
+                assertEquals(locale.getKey().equals("zh_cn") ? "火元素附着" : "Fire Element Attachment",
+                        String.format(enchantment, name));
+                String enhanced = translations.get("enchantment.elemental_phase.element_enhanced_name").getAsString();
+                assertEquals(locale.getKey().equals("zh_cn") ? "火元素强化" : "Fire Element Empowerment",
+                        String.format(enhanced, name));
+                String enhancedDescription = translations.get(
+                        "enchantment.elemental_phase.element_enhanced_description").getAsString();
+                assertEquals(locale.getKey().equals("zh_cn")
+                                ? "造成的伤害变为火元素伤害，并附着1点火元素。"
+                                : "Attacks deal Fire Element damage and attach Fire Element (base amount: 1).",
+                        String.format(enhancedDescription, "1", name, name));
+            }
+        }
+    }
+
+    @Test
+    void enabledEnhancementChangesEnchantmentNameAndDescriptionWithoutRenamingBook() throws ReflectiveOperationException {
+        var catalog = ElementBookCatalog.clientElements();
+        var colors = ElementBookCatalog.clientColors();
+        var previous = configureEnchantmentAmount(2.5D);
+        try {
+            ElementalPhaseServerConfig.ENCHANTMENT_ENHANCEMENT_ENABLED.set(true);
+            ElementBookCatalog.replaceClient(Map.of(CUSTOM, "custom.name.steam"), Map.of(CUSTOM, 0x7EE7C4));
+            var enchantment = com.elementalphase.registry.ModEnchantments.forElement(CUSTOM).orElseThrow();
+            var book = ElementEnchantmentData.createBook(CUSTOM);
+            assertEquals("item.minecraft.enchanted_book",
+                    ((net.minecraft.network.chat.contents.TranslatableContents) book.getHoverName().getContents()).getKey());
+            var name = (net.minecraft.network.chat.contents.TranslatableContents) enchantment.getFullname(1).getContents();
+            assertEquals("enchantment.elemental_phase.element_enhanced_name", name.getKey());
+            var description = (net.minecraft.network.chat.contents.TranslatableContents)
+                    enchantment.description().getContents();
+            assertEquals("enchantment.elemental_phase.element_enhanced_description", description.getKey());
+            assertEquals("2.5", description.getArgs()[0]);
+            for (int index = 1; index <= 2; index++) {
+                Component element = (Component) description.getArgs()[index];
+                assertEquals(0x7EE7C4, element.getStyle().getColor().getValue());
+                assertEquals("custom.name.steam",
+                        ((net.minecraft.network.chat.contents.TranslatableContents) element.getContents()).getKey());
+            }
+        } finally {
+            ElementalPhaseServerConfig.SPEC.setConfig(previous);
+            ElementBookCatalog.replaceClient(catalog, colors);
+        }
+    }
+
+    @Test
+    void replacesIndentedElementDescriptionWithoutChangingOrdinaryDescription() {
+        var catalog = ElementBookCatalog.clientElements();
+        var colors = ElementBookCatalog.clientColors();
+        try {
+            ElementBookCatalog.replaceClient(Map.of(FIRE, "element.elemental_phase.fire"), Map.of(FIRE, 0xFF7A00));
+            ItemStack book = ElementEnchantmentData.createBook(FIRE);
+            var enchantment = com.elementalphase.registry.ModEnchantments.forElement(FIRE).orElseThrow();
+            Component title = book.getHoverName();
+            Component name = enchantment.getFullname(1);
+            Component untranslated = Component.literal("  ")
+                    .append(Component.translatable(enchantment.getDescriptionId() + ".desc"));
+            Component ordinaryDescription = Component.translatable("enchantment.minecraft.sharpness.desc");
+            var lines = new ArrayList<>(List.of(title, name, untranslated, ordinaryDescription));
+            var event = new net.minecraftforge.event.entity.player.ItemTooltipEvent(book, null, lines,
+                    net.minecraft.world.item.TooltipFlag.Default.NORMAL);
+            com.elementalphase.client.ClientElementBooks.tooltip(event);
+            var description = assertInstanceOf(net.minecraft.network.chat.contents.TranslatableContents.class,
+                    lines.get(2).getContents());
+            assertEquals("enchantment.elemental_phase.element_description", description.getKey());
+            assertSame(title, lines.get(0));
+            assertSame(ordinaryDescription, lines.get(3));
+            assertEquals(4, lines.size());
+            com.elementalphase.client.ClientElementBooks.tooltip(event);
+            assertEquals(4, lines.size());
+        } finally {
+            ElementBookCatalog.replaceClient(catalog, colors);
+        }
+    }
+
+    @Test
+    void configuredAttachmentAmountIsUsedAndCapturedByWeaponSource() throws ReflectiveOperationException {
+        var originalConfig = configureEnchantmentAmount(2.5D);
+        try {
+            var snapshot = new com.elementalphase.data.ElementDataParser().parseLenient(Map.of(
+                    id("example:elemental_phase/elements/steam.json"),
+                    com.google.gson.JsonParser.parseString("{}"))).snapshot();
+            ItemStack weapon = new ItemStack(Items.DIAMOND_SWORD);
+            ElementEnchantmentData.setElement(weapon, CUSTOM);
+            var select = com.elementalphase.combat.AttackElementResolver.class.getDeclaredMethod(
+                    "enchantmentCandidate", ItemStack.class, com.elementalphase.data.ElementDataSnapshot.class);
+            select.setAccessible(true);
+            var candidate = (com.elementalphase.combat.ProjectileElementSnapshot.Candidate)
+                    ((Optional<?>) select.invoke(null, weapon, snapshot)).orElseThrow();
+            assertEquals(2.5D, candidate.baseAmount());
+            var captured = new com.elementalphase.combat.ProjectileElementSnapshot(true, 3.0D,
+                    Optional.of(candidate), Optional.empty());
+            var context = com.elementalphase.combat.AttackElementResolver.class.getDeclaredMethod("context",
+                    Optional.class, double.class, com.elementalphase.data.ElementDataSnapshot.class,
+                    com.elementalphase.combat.ElementAttackContext.SourceKind.class);
+            context.setAccessible(true);
+            var attack = (com.elementalphase.combat.ElementAttackContext) ((Optional<?>) context.invoke(null,
+                    captured.enchantment(), captured.strength(), snapshot,
+                    com.elementalphase.combat.ElementAttackContext.SourceKind.ENCHANTMENT)).orElseThrow();
+            assertEquals(7.5D, attack.mountAmount());
+            var amount = (net.minecraftforge.common.ForgeConfigSpec.DoubleValue)
+                    ElementalPhaseServerConfig.SPEC.getValues().get(List.of("enchantments", "base_attachment_amount"));
+            amount.set(5.0D);
+            var next = (com.elementalphase.combat.ProjectileElementSnapshot.Candidate)
+                    ((Optional<?>) select.invoke(null, weapon, snapshot)).orElseThrow();
+            assertEquals(5.0D, next.baseAmount());
+            var tag = new net.minecraft.nbt.CompoundTag();
+            captured.writeTo(tag);
+            assertEquals(2.5D, com.elementalphase.combat.ProjectileElementSnapshot.readFrom(tag)
+                    .orElseThrow().enchantment().orElseThrow().baseAmount());
+        } finally {
+            ElementalPhaseServerConfig.SPEC.setConfig(originalConfig);
+        }
+    }
+
+    @Test
+    void hiddenEnchantmentNamesAlsoHideDescriptions() {
+        var catalog = ElementBookCatalog.clientElements();
+        var colors = ElementBookCatalog.clientColors();
+        try {
+            ElementBookCatalog.replaceClient(Map.of(FIRE, "element.elemental_phase.fire"), Map.of(FIRE, 0xFF7A00));
+            ItemStack book = ElementEnchantmentData.createBook(FIRE);
+            ItemStack weapon = new ItemStack(Items.DIAMOND_SWORD);
+            ElementEnchantmentData.setElement(weapon, FIRE);
+            for (ItemStack stack : List.of(book, weapon)) {
+                stack.getOrCreateTag().putInt("HideFlags", stack.is(Items.ENCHANTED_BOOK) ? 32 : 1);
+                Component title = stack.getHoverName();
+                var lines = new ArrayList<>(List.of(title));
+                var event = new net.minecraftforge.event.entity.player.ItemTooltipEvent(stack, null, lines,
+                        net.minecraft.world.item.TooltipFlag.Default.NORMAL);
+                com.elementalphase.client.ClientElementBooks.tooltip(event);
+                assertEquals(List.of(title), lines);
+            }
+        } finally {
+            ElementBookCatalog.replaceClient(catalog, colors);
+        }
+    }
+
+    private static CommentedConfig configureEnchantmentAmount(double amount) throws ReflectiveOperationException {
+        var field = net.minecraftforge.common.ForgeConfigSpec.class.getDeclaredField("childConfig");
+        field.setAccessible(true);
+        var previous = (CommentedConfig) field.get(ElementalPhaseServerConfig.SPEC);
+        var replacement = CommentedConfig.inMemory();
+        ElementalPhaseServerConfig.SPEC.correct(replacement);
+        ElementalPhaseServerConfig.SPEC.setConfig(replacement);
+        replacement.set("enchantments.base_attachment_amount", amount);
+        ElementalPhaseServerConfig.SPEC.afterReload();
+        return previous;
     }
 
     @Test

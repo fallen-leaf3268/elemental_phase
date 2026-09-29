@@ -6,14 +6,43 @@ import com.elementalphase.data.model.ElementDisplayDefinition;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.resources.ResourceLocation;
 import org.junit.jupiter.api.Test;
+import snownee.jade.impl.WailaClientRegistration;
+import snownee.jade.impl.config.PluginConfig;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class JadeElementDataTest {
+    @Test
+    void registersElementDisplayWithOneEnabledToggle() throws ReflectiveOperationException {
+        var initializeListenerList = net.minecraftforge.eventbus.api.EventListenerHelper.class.getDeclaredMethod(
+                "getListenerListInternal", Class.class, boolean.class);
+        initializeListenerList.setAccessible(true);
+        initializeListenerList.invoke(null, net.minecraftforge.network.NetworkEvent.class, true);
+        initializeListenerList.invoke(null, net.minecraftforge.network.NetworkEvent.GatherLoginPayloadsEvent.class, true);
+        var registration = WailaClientRegistration.instance();
+        var config = PluginConfig.INSTANCE;
+        var uid = ElementalPhaseJadePlugin.ELEMENT_INFO;
+        assertFalse(config.containsKey(uid));
+        try {
+            assertDoesNotThrow(() -> new ElementalPhaseJadePlugin().registerClient(registration));
+            assertEquals(Set.of(uid), config.getKeys("elemental_phase"));
+            assertEquals(Boolean.TRUE, config.getEntry(uid).getDefaultValue());
+            assertEquals(Boolean.TRUE, config.getEntry(uid).getValue());
+            assertTrue(config.set(uid, false));
+            assertEquals(Boolean.FALSE, config.getEntry(uid).getValue());
+        } finally {
+            config.getKeys().remove(uid);
+        }
+    }
+
     @Test
     void filtersSortsAndRoundTripsDisplayMetadata() {
         ResourceLocation alpha = id("alpha");

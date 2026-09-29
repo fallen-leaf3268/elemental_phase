@@ -1,6 +1,7 @@
 package com.elementalphase.combat;
 
 import com.elementalphase.data.ReactionIndex;
+import com.elementalphase.config.ElementalPhaseServerConfig;
 import com.elementalphase.data.model.ElementDefinition;
 import com.elementalphase.data.model.ReactionDamageDefinition;
 import com.elementalphase.reaction.ReactionEngine;
@@ -23,7 +24,7 @@ public final class CombatPipeline {
     public CombatResult resolve(CombatInput input) {
         double originalDamage = Double.isFinite(input.originalDamage()) ? Math.max(0.0D, input.originalDamage()) : 0.0D;
         double resistance = ResistancePolicy.clamp(input.resistance());
-        double baseDamage = ResistancePolicy.apply(originalDamage, resistance);
+        double baseDamage = originalDamageAfterElementResistance(originalDamage, resistance, input.attack());
         ElementRuntimeState.ApplyResult applyResult;
         ReactionOutcome outcome = ReactionOutcome.empty();
         ReactionPlan plan = ReactionPlan.empty(baseDamage, ElementRuntimeState.ApplyResult.NO_AMOUNT);
@@ -61,6 +62,13 @@ public final class CombatPipeline {
         }
         double finalDamage = plan.labels().isEmpty() ? baseDamage : plan.finalDamage();
         return new CombatResult(baseDamage, plan.mainDamageBonus(), finalDamage, applyResult, outcome, plan);
+    }
+
+    public static double originalDamageAfterElementResistance(double damage, double resistance,
+                                                               ElementAttackContext attack) {
+        boolean applies = attack == null || attack.sourceKind() != ElementAttackContext.SourceKind.ENCHANTMENT
+                || ElementalPhaseServerConfig.enchantmentEnhancementEnabled();
+        return ResistancePolicy.apply(damage, applies ? resistance : 0.0D);
     }
 
     public record CombatInput(double originalDamage, double resistance, ElementAttackContext attack,

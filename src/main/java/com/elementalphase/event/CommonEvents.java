@@ -4,11 +4,13 @@ import com.elementalphase.ElementalPhase;
 import com.elementalphase.capability.ElementalCapabilities;
 import com.elementalphase.capability.ElementalStateProvider;
 import com.elementalphase.combat.AttackElementResolver;
+import com.elementalphase.combat.ElementAttackContext;
 import com.elementalphase.combat.CombatPipeline;
 import com.elementalphase.combat.ProjectileSnapshotManager;
 import com.elementalphase.combat.QueuedHitExecution;
 import com.elementalphase.combat.ReactionExecutionScheduler;
 import com.elementalphase.command.ElementalPhaseCommands;
+import com.elementalphase.config.ElementalPhaseServerConfig;
 import com.elementalphase.data.ElementDataManager;
 import com.elementalphase.data.ElementReloadListener;
 import com.elementalphase.data.ElementDataRuntimeValidator;
@@ -21,6 +23,7 @@ import com.elementalphase.network.ModNetwork;
 import com.elementalphase.integration.damagenumber.DamageNumberCompat;
 import com.elementalphase.profile.EntityProfileResolver;
 import com.elementalphase.reaction.runtime.ReactionRuntimeController;
+import com.elementalphase.reaction.ReactionPlan;
 import com.elementalphase.state.ElementSourceSnapshot;
 import com.mojang.logging.LogUtils;
 import net.minecraft.resources.ResourceLocation;
@@ -29,6 +32,7 @@ import net.minecraft.tags.TagKey;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.projectile.Projectile;
 import net.minecraft.world.entity.boss.enderdragon.EnderDragon;
 import net.minecraft.world.entity.boss.wither.WitherBoss;
@@ -39,7 +43,6 @@ import net.minecraftforge.event.TagsUpdatedEvent;
 import net.minecraftforge.event.entity.EntityJoinLevelEvent;
 import net.minecraftforge.event.entity.EntityLeaveLevelEvent;
 import net.minecraftforge.event.entity.living.LivingDeathEvent;
-import net.minecraftforge.event.entity.living.LivingHurtEvent;
 import net.minecraftforge.event.entity.living.LivingDamageEvent;
 import net.minecraftforge.event.entity.player.ArrowLooseEvent;
 import net.minecraftforge.event.entity.player.PlayerEvent;
@@ -54,6 +57,7 @@ import net.minecraftforge.server.ServerLifecycleHooks;
 import org.slf4j.Logger;
 
 import java.util.Optional;
+import java.util.OptionalInt;
 
 @Mod.EventBusSubscriber(modid = ElementalPhase.MOD_ID, bus = Mod.EventBusSubscriber.Bus.FORGE)
 public final class CommonEvents {
@@ -211,71 +215,81 @@ public final class CommonEvents {
         }
     }
 
-    @SubscribeEvent(priority = EventPriority.LOWEST, receiveCanceled = false)
-    public static void applyElementalCombat(LivingHurtEvent event) {
+    public static PreparedElementalHit prepareElementalHit(LivingEntity target, DamageSource source, float amount) {
+        var unchanged = new PreparedElementalHit(amount, null);
         if (ReactionDamageContext.current().isPresent() && !ReactionDamageContext.allowsElementApplication()) {
-            return;
+            return unchanged;
         }
-        LivingEntity target = event.getEntity();
-        if (target.level().isClientSide() || !target.isAlive() || !Float.isFinite(event.getAmount()) || event.getAmount() <= 0.0F) {
-            return;
+        if (target.level().isClientSide() || !target.isAlive() || !Float.isFinite(amount) || amount <= 0.0F) {
+            return unchanged;
         }
         var snapshot = ElementDataManager.snapshot();
-        ElementalCapabilities.get(target).ifPresent(state -> {
+        return ElementalCapabilities.get(target).resolve().map(state -> {
             PROFILE_RESOLVER.initializeIfNeeded(target, state, snapshot);
-            var direct = event.getSource().getDirectEntity();
+            var direct = source.getDirectEntity();
             var resolvedAttack = direct instanceof Projectile projectile
-                    ? ATTACK_RESOLVER.resolveProjectile(event.getSource(), projectile, snapshot)
-                    : ATTACK_RESOLVER.resolve(event.getSource(), target, snapshot);
-            resolvedAttack.ifPresent(attack -> {
-                var element = snapshot.elements().get(attack.element());
-                if (element == null) {
-                    return;
-                }
-                ResourceLocation damageType = event.getSource().typeHolder().unwrapKey()
-                        .map(key -> key.location()).orElse(ResourceLocation.withDefaultNamespace("generic"));
-                ElementSourceSnapshot sourceSnapshot = new ElementSourceSnapshot(
-                        Optional.ofNullable(event.getSource().getEntity()).map(Entity::getUUID),
-                        Optional.ofNullable(direct).map(Entity::getUUID), attack.sourceId(), damageType,
-                        attack.element(), attack.elementStrength(), target.level().getGameTime());
-                if (ReactionDamageContext.current().isPresent() && !ReactionDamageContext.allowsReactions()) {
-                    state.applyElement(element, attack.mountAmount(), target.level().getGameTime(),
-                            element.attachment().durationTicks(), true, sourceSnapshot);
-                    event.setAmount((float) com.elementalphase.combat.ResistancePolicy.apply(
-                            event.getAmount(), state.resistance(attack.element())));
-                    return;
-                }
-                var reservation = REACTION_SCHEDULER.reserve(target.getServer());
-                if (reservation.isEmpty()) {
-                    LOGGER.warn("Elemental reaction execution queue is full; skipping elemental processing for this hit");
-                    return;
-                }
-                LivingEntity attacker = event.getSource().getEntity() instanceof LivingEntity living ? living : null;
-                com.elementalphase.reaction.ReactionChainGuard guard = ReactionDamageContext.chainGuard()
-                        .orElseGet(com.elementalphase.reaction.ReactionChainGuard::new);
-                try {
-                    var result = COMBAT_PIPELINE.resolve(new CombatPipeline.CombatInput(event.getAmount(),
-                            state.resistance(attack.element()), attack, state, target.level().getGameTime(), element,
-                            snapshot.reactionIndex(), snapshot.elements(), sourceSnapshot,
-                            attacker instanceof Player player ? player.experienceLevel : 0.0D,
-                            target.getHealth(), target.getMaxHealth(),
-                            condition -> conditionMatches(condition, event.getSource(), attacker, target,
-                                    event.getAmount()), guard));
-                    event.setAmount((float) result.finalPreArmorDamage());
-                    DAMAGE_DISPLAY.recordReactionAttack(target, event.getSource(), result.reactionPlan());
-                    if (result.reactionPlan().actions().isEmpty()) {
-                        REACTION_SCHEDULER.release(reservation.get());
-                    } else {
-                        REACTION_SCHEDULER.commit(reservation.get(), new QueuedHitExecution(
-                                 (net.minecraft.server.level.ServerLevel) target.level(), attacker, target,
-                                 event.getSource(), result.reactionPlan(), snapshot, target.level().getGameTime(), guard));
-                    }
-                } catch (RuntimeException exception) {
+                    ? ATTACK_RESOLVER.resolveProjectile(source, projectile, snapshot)
+                    : ATTACK_RESOLVER.resolve(source, target, snapshot);
+            if (resolvedAttack.isEmpty()) return unchanged;
+            var attack = resolvedAttack.get();
+            var element = snapshot.elements().get(attack.element());
+            if (element == null) return unchanged;
+            ResourceLocation damageType = source.typeHolder().unwrapKey()
+                    .map(key -> key.location()).orElse(ResourceLocation.withDefaultNamespace("generic"));
+            ElementSourceSnapshot sourceSnapshot = new ElementSourceSnapshot(
+                    Optional.ofNullable(source.getEntity()).map(Entity::getUUID),
+                    Optional.ofNullable(direct).map(Entity::getUUID), attack.sourceId(), damageType,
+                    attack.element(), attack.elementStrength(), target.level().getGameTime());
+            if (ReactionDamageContext.current().isPresent() && !ReactionDamageContext.allowsReactions()) {
+                state.applyElement(element, attack.mountAmount(), target.level().getGameTime(),
+                        element.attachment().durationTicks(), true, sourceSnapshot);
+                return new PreparedElementalHit((float) CombatPipeline.originalDamageAfterElementResistance(
+                        amount, state.resistance(attack.element()), attack), null);
+            }
+            var reservation = REACTION_SCHEDULER.reserve(target.getServer());
+            if (reservation.isEmpty()) {
+                LOGGER.warn("Elemental reaction execution queue is full; skipping elemental processing for this hit");
+                return unchanged;
+            }
+            LivingEntity attacker = source.getEntity() instanceof LivingEntity living ? living : null;
+            com.elementalphase.reaction.ReactionChainGuard guard = ReactionDamageContext.chainGuard()
+                    .orElseGet(com.elementalphase.reaction.ReactionChainGuard::new);
+            try {
+                var result = COMBAT_PIPELINE.resolve(new CombatPipeline.CombatInput(amount,
+                        state.resistance(attack.element()), attack, state, target.level().getGameTime(), element,
+                        snapshot.reactionIndex(), snapshot.elements(), sourceSnapshot,
+                        attacker instanceof Player player ? player.experienceLevel : 0.0D,
+                        target.getHealth(), target.getMaxHealth(),
+                        condition -> conditionMatches(condition, source, attacker, target, amount), guard));
+                if (result.reactionPlan().actions().isEmpty()) {
                     REACTION_SCHEDULER.release(reservation.get());
-                    throw exception;
+                } else {
+                    REACTION_SCHEDULER.commit(reservation.get(), new QueuedHitExecution(
+                            (net.minecraft.server.level.ServerLevel) target.level(), attacker, target,
+                            source, result.reactionPlan(), snapshot, target.level().getGameTime(), guard));
                 }
-            });
-        });
+                OptionalInt enhancedColor = attack.sourceKind() == ElementAttackContext.SourceKind.ENCHANTMENT
+                        && ElementalPhaseServerConfig.enchantmentEnhancementEnabled()
+                        ? OptionalInt.of(element.display().color()) : OptionalInt.empty();
+                return new PreparedElementalHit((float) result.finalPreArmorDamage(), result.reactionPlan(),
+                        enhancedColor);
+            } catch (RuntimeException exception) {
+                REACTION_SCHEDULER.release(reservation.get());
+                throw exception;
+            }
+        }).orElse(unchanged);
+    }
+
+    public static void recordElementalHitDamage(LivingEntity target, DamageSource source, PreparedElementalHit hit) {
+        if (hit != null && hit.reactionPlan() != null) {
+            DAMAGE_DISPLAY.recordReactionAttack(target, source, hit.reactionPlan(), hit.enhancedColor());
+        }
+    }
+
+    public record PreparedElementalHit(float amount, ReactionPlan reactionPlan, OptionalInt enhancedColor) {
+        public PreparedElementalHit(float amount, ReactionPlan reactionPlan) {
+            this(amount, reactionPlan, OptionalInt.empty());
+        }
     }
 
     @SubscribeEvent(priority = EventPriority.LOWEST, receiveCanceled = true)

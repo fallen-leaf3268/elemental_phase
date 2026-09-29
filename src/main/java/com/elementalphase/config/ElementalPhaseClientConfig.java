@@ -11,6 +11,7 @@ public final class ElementalPhaseClientConfig {
     static final double MAX_HEIGHT_RATIO = 1.5D;
     public static final ForgeConfigSpec SPEC;
     public static final ForgeConfigSpec.IntValue MAX_POPUPS;
+    public static final ForgeConfigSpec.IntValue MAX_POPUPS_PER_ENTITY;
     public static final ForgeConfigSpec.DoubleValue MAX_DISTANCE;
     public static final ForgeConfigSpec.DoubleValue FONT_SCALE;
     public static final ForgeConfigSpec.DoubleValue HEIGHT_RATIO;
@@ -33,7 +34,7 @@ public final class ElementalPhaseClientConfig {
                 .define("show_reactions", true);
         DISABLE_VANILLA_DAMAGE_INDICATOR = builder.comment("是否禁用原版伤害心形粒子（minecraft:damage_indicator）。默认：true。")
                 .define("disable_vanilla_damage_indicator", true);
-        FONT_SCALE = builder.comment("伤害文字缩放。默认：1.0；有效范围：0.5–3.0。")
+        FONT_SCALE = builder.comment("伤害文字基础缩放，随相机到受击位置的距离近大远小；4格时使用该值，近处最多为其2倍。默认：1.0；有效范围：0.5–3.0。")
                 .defineInRange("font_scale", 1.0D, MIN_FONT_SCALE, MAX_FONT_SCALE);
         HEIGHT_RATIO = builder.comment("文字在实体包围盒上的高度比例：0 为脚部，0.5 为中部，1 为头部。默认：0.6；有效范围：0.0–1.5。")
                 .defineInRange("height_ratio", 0.6D, MIN_HEIGHT_RATIO, MAX_HEIGHT_RATIO);
@@ -43,6 +44,8 @@ public final class ElementalPhaseClientConfig {
                 .push("performance");
         MAX_POPUPS = builder.comment("同时保留的最大飘字数量。默认：96；有效范围：16–256。")
                 .defineInRange("max_count", 96, 16, 256);
+        MAX_POPUPS_PER_ENTITY = builder.comment("单个生物最多保留的飘字数量，新数字替换最旧的；每条在受击点附近独立飘动，条数不影响出生区域。默认：9；有效范围：0–256；0 表示不额外限制单个生物的数量。")
+                .defineInRange("max_count_per_entity", 9, 0, 256);
         MAX_DISTANCE = builder.comment("飘字的最大显示距离（方块）。默认：64.0；有效范围：8.0–256.0。")
                 .defineInRange("max_distance", 64.0D, 8.0D, 256.0D);
         builder.pop();

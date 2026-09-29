@@ -21,6 +21,5 @@ public final class ElementalPhaseJadePlugin implements IWailaPlugin {
     @Override
     public void registerClient(IWailaClientRegistration registration) {
         registration.registerEntityComponent(ElementEntityProvider.INSTANCE, LivingEntity.class);
-        registration.addConfig(ELEMENT_INFO, true);
     }
 }

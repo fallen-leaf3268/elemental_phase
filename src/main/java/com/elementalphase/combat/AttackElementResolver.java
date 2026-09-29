@@ -2,6 +2,7 @@ package com.elementalphase.combat;
 
 import com.elementalphase.data.ElementDataManager;
 import com.elementalphase.data.ElementDataSnapshot;
+import com.elementalphase.config.ElementalPhaseServerConfig;
 import com.elementalphase.enchantment.ElementEnchantmentData;
 import com.elementalphase.registry.ModAttributes;
 import com.elementalphase.registry.ModEnchantments;
@@ -88,7 +89,7 @@ public final class AttackElementResolver {
     private static Optional<ProjectileElementSnapshot.Candidate> enchantmentCandidate(
             ItemStack item, ElementDataSnapshot snapshot) {
         return ElementEnchantmentData.activeElement(item, snapshot.elements().keySet())
-                .map(element -> new ProjectileElementSnapshot.Candidate(element, 1.0D,
+                .map(element -> new ProjectileElementSnapshot.Candidate(element, ElementalPhaseServerConfig.enchantmentBaseAmount(),
                         ModEnchantments.enchantmentId(element), Optional.of(ModEnchantments.enchantmentId(element))));
     }
 

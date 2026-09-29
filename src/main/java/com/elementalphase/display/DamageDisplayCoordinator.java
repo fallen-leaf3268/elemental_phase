@@ -24,6 +24,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.OptionalInt;
 
 public final class DamageDisplayCoordinator {
     private static final int MAX_QUEUED_REACTIONS = 4096;
@@ -63,12 +64,15 @@ public final class DamageDisplayCoordinator {
         }
     }
 
-    public void recordReactionAttack(LivingEntity target, DamageSource source, ReactionPlan plan) {
+    public void recordReactionAttack(LivingEntity target, DamageSource source, ReactionPlan plan,
+                                     OptionalInt enhancedColor) {
         if (!(target.level() instanceof ServerLevel level) || ReactionDamageContext.current().isPresent()) return;
         long tick = level.getServer().getTickCount();
-        var appearance = appearance(plan, DamageColorResolver.resolve(source));
+        var appearance = appearance(plan, enhancedColor.orElseGet(() -> DamageColorResolver.resolve(source)));
         mainDamage.record(source, target.getId(), tick, appearance);
-        if (!plan.mainDamageLabels().isEmpty()) DamageNumberCompat.record(source, tick, appearance);
+        if (enhancedColor.isPresent() || !plan.mainDamageLabels().isEmpty()) {
+            DamageNumberCompat.record(source, tick, appearance);
+        }
     }
 
     public void onFinalDamage(LivingDamageEvent event) {

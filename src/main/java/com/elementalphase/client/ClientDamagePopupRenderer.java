@@ -72,7 +72,7 @@ public final class ClientDamagePopupRenderer {
         int localPlayerId = minecraft.player.getId();
         double maxDistance = ElementalPhaseClientConfig.MAX_DISTANCE.get();
         double maxDistanceSquared = maxDistance * maxDistance;
-        float fontScale = ElementalPhaseClientConfig.FONT_SCALE.get().floatValue();
+        float baseFontScale = ElementalPhaseClientConfig.FONT_SCALE.get().floatValue();
         var projected = new DamagePopupPlacement.ScreenPoint();
         DamagePopupManager.INSTANCE.forEachActive(now, (popup, offsetX, offsetY, alpha) -> {
             var packet = popup.packet();
@@ -96,8 +96,10 @@ public final class ClientDamagePopupRenderer {
             if (isBlocked(popup.id(), now, minecraft.level, cameraPosition, popup.bounds())) {
                 return;
             }
-            double renderX = projected.x() + offsetX;
-            double renderY = projected.y() + offsetY;
+            float fontScale = DamagePopupPlacement.fontScale(baseFontScale, distanceSquared);
+            projected.offset(offsetX, offsetY, distanceSquared);
+            double renderX = projected.x();
+            double renderY = projected.y();
             double halfWidth = popup.textWidth() * fontScale * 0.5D;
             double height = minecraft.font.lineHeight * fontScale;
             if (renderX + halfWidth < 0.0D || renderX - halfWidth > screenWidth

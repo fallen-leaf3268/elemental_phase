@@ -5,6 +5,12 @@ import net.minecraft.world.phys.AABB;
 
 public final class DamagePopupPlacement {
     private static final double MIN_FORWARD_DEPTH = 0.05D;
+    private static final double FONT_SCALE_REFERENCE_DISTANCE = 4.0D;
+    private static final double FONT_SCALE_MIN_DISTANCE = 1.0D;
+    private static final double NEAR_HORIZONTAL_SPREAD_DISTANCE = 2.0D;
+    private static final double FAR_HORIZONTAL_SPREAD_DISTANCE = 8.0D;
+    private static final double OFFSET_REFERENCE_PIXELS_PER_BLOCK = 180.0D / (4.0D * Math.tan(Math.toRadians(35.0D)));
+    private static final double MAX_OFFSET_SCALE = 2.0D;
     private static final double OCCLUSION_REFRESH_TICKS = 4.0D;
     private static final double OCCLUSION_CAMERA_MOVE_SQUARED = 0.0625D;
 
@@ -13,6 +19,11 @@ public final class DamagePopupPlacement {
 
     public static double anchorY(AABB bounds, double heightRatio) {
         return bounds.minY + bounds.getYsize() * heightRatio;
+    }
+
+    public static float fontScale(float baseScale, double distanceSquared) {
+        double distance = Math.max(FONT_SCALE_MIN_DISTANCE, Math.sqrt(distanceSquared));
+        return (float) (baseScale * Math.sqrt(FONT_SCALE_REFERENCE_DISTANCE / distance));
     }
 
     public static boolean projectToScreen(
@@ -59,7 +70,9 @@ public final class DamagePopupPlacement {
         if (!Double.isFinite(screenX) || !Double.isFinite(screenY)) {
             return false;
         }
-        result.set(screenX, screenY);
+        result.set(screenX, screenY,
+                screenWidth * 0.5D * projection.m00() / clipW / OFFSET_REFERENCE_PIXELS_PER_BLOCK,
+                screenHeight * 0.5D * projection.m11() / clipW / OFFSET_REFERENCE_PIXELS_PER_BLOCK);
         return true;
     }
 
@@ -93,10 +106,22 @@ public final class DamagePopupPlacement {
     public static final class ScreenPoint {
         private double x;
         private double y;
+        private double horizontalScale;
+        private double verticalScale;
 
-        private void set(double x, double y) {
+        private void set(double x, double y, double horizontalScale, double verticalScale) {
             this.x = x;
             this.y = y;
+            this.horizontalScale = Math.max(-MAX_OFFSET_SCALE, Math.min(MAX_OFFSET_SCALE, horizontalScale));
+            this.verticalScale = Math.max(-MAX_OFFSET_SCALE, Math.min(MAX_OFFSET_SCALE, verticalScale));
+        }
+
+        public void offset(double offsetX, double offsetY, double distanceSquared) {
+            double spread = Math.max(0.0D, Math.min(1.0D,
+                    (FAR_HORIZONTAL_SPREAD_DISTANCE - Math.sqrt(distanceSquared))
+                            / (FAR_HORIZONTAL_SPREAD_DISTANCE - NEAR_HORIZONTAL_SPREAD_DISTANCE)));
+            x += offsetX * horizontalScale * spread;
+            y += offsetY * verticalScale;
         }
 
         public double x() {

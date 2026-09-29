@@ -305,7 +305,7 @@ class ReactionResistanceTest {
                                                         double triggerAmount, List<ReactionSpec> reactions) {
         var definitions = Map.of(FIRE, element(FIRE), WATER, element(WATER), ICE, element(ICE));
         var byId = reactions.stream().collect(java.util.stream.Collectors.toMap(ReactionSpec::id, value -> value));
-        var attack = new ElementAttackContext(WATER, triggerAmount, ElementAttackContext.SourceKind.ENCHANTMENT, WATER);
+        var attack = new ElementAttackContext(WATER, triggerAmount, ElementAttackContext.SourceKind.DAMAGE_TYPE_TAG, WATER);
         return new CombatPipeline().resolve(new CombatPipeline.CombatInput(100, elementResistance, attack, state, 0,
                 definitions.get(WATER), ReactionIndex.build(byId), definitions, null, 0, 100, 100, ignored -> true, null));
     }

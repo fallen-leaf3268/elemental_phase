@@ -6,7 +6,8 @@
   "refmap": "elemental_phase.refmap.json",
   "mixins": [
     "AnvilMenuMixin",
-    "CrossbowItemMixin"
+    "CrossbowItemMixin",
+    "LivingEntityMixin"
   ],
   "client": [
     "CreativeModeTabsAccessor"

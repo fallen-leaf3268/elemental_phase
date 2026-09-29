@@ -20,7 +20,7 @@ public final class ElementalPhase {
         ModNetwork.register();
         DamageNumberCompat.initialize();
         ModLoadingContext.get().registerConfig(ModConfig.Type.CLIENT, ElementalPhaseClientConfig.SPEC);
-        ModLoadingContext.get().registerConfig(ModConfig.Type.SERVER, ElementalPhaseServerConfig.SPEC);
+        ModLoadingContext.get().registerConfig(ModConfig.Type.COMMON, ElementalPhaseServerConfig.SPEC);
         var modEventBus = net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext.get().getModEventBus();
         ModAttributes.ATTRIBUTES.register(modEventBus);
         ModEnchantments.register(modEventBus);

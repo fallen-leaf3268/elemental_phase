@@ -21,7 +21,7 @@ import java.util.Optional;
 import java.util.function.Supplier;
 
 public final class ModNetwork {
-    private static final String PROTOCOL_VERSION = "8";
+    private static final String PROTOCOL_VERSION = "10";
     private static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
             ResourceLocation.fromNamespaceAndPath(ElementalPhase.MOD_ID, "main"),
             () -> PROTOCOL_VERSION,
@@ -64,11 +64,16 @@ public final class ModNetwork {
     public static void sendElementCatalog(net.minecraft.server.level.ServerPlayer player) {
         var snapshot = com.elementalphase.data.ElementDataManager.snapshot();
         var elements = new java.util.HashMap<ResourceLocation, String>();
-        snapshot.elements().forEach((id, definition) ->
-                elements.put(id, definition.display().translationKey()));
+        var colors = new java.util.HashMap<ResourceLocation, Integer>();
+        snapshot.elements().forEach((id, definition) -> {
+            elements.put(id, definition.display().translationKey());
+            colors.put(id, definition.display().color());
+        });
         var reactionNames = new java.util.HashMap<ResourceLocation, String>();
         snapshot.reactions().forEach((id, spec) -> reactionNames.put(id, spec.translationKey()));
-        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), new ElementCatalogPacket(elements, reactionNames));
+        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), new ElementCatalogPacket(elements, reactionNames,
+                colors, com.elementalphase.config.ElementalPhaseServerConfig.enchantmentEnhancementEnabled(),
+                com.elementalphase.config.ElementalPhaseServerConfig.enchantmentBaseAmount()));
     }
 
     private static void handleElementCatalog(ElementCatalogPacket message,
