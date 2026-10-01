@@ -429,6 +429,7 @@ public final class ElementRuntimeState {
         CompoundTag tag = new CompoundTag();
         source.attacker().ifPresent(value -> tag.putUUID("attacker", value));
         source.directEntity().ifPresent(value -> tag.putUUID("direct", value));
+        source.playerName().ifPresent(value -> tag.putString("player_name", value));
         tag.putString("source_id", source.sourceId().toString());
         tag.putString("damage_type", source.damageType().toString());
         tag.putString("element", source.element().toString());
@@ -442,9 +443,12 @@ public final class ElementRuntimeState {
         ResourceLocation damage = ResourceLocation.tryParse(tag.getString("damage_type"));
         ResourceLocation element = ResourceLocation.tryParse(tag.getString("element"));
         if (source == null || damage == null || element == null) return null;
+        double strength = tag.getDouble("strength");
+        if (!Double.isFinite(strength)) return null;
         return new ElementSourceSnapshot(tag.hasUUID("attacker") ? Optional.of(tag.getUUID("attacker")) : Optional.empty(),
                 tag.hasUUID("direct") ? Optional.of(tag.getUUID("direct")) : Optional.empty(), source, damage, element,
-                Math.max(0.0D, Math.min(1_000_000.0D, tag.getDouble("strength"))), tag.getLong("created_at"));
+                Math.max(0.0D, Math.min(1_000_000.0D, strength)), tag.getLong("created_at"),
+                tag.contains("player_name", CompoundTag.TAG_STRING) ? Optional.of(tag.getString("player_name")) : Optional.empty());
     }
 
     private static double bounded(double value) {

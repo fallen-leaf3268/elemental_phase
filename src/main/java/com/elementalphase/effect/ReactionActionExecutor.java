@@ -25,7 +25,9 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.effect.MobEffectInstance;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
@@ -84,8 +86,9 @@ public final class ReactionActionExecutor {
     }
 
     public void executeOrdered(QueuedHitExecution execution, ReactionExecutionBudget budget) {
-        if (execution == null || execution.target() == null || execution.target().isRemoved()) return;
+        if (execution == null || !execution.isCurrent() || execution.target() == null || execution.target().isRemoved()) return;
         for (var planned : execution.plan().actions()) {
+            if (!execution.isCurrent()) return;
             execute(execution, planned.action(), planned.facts(), planned.stateSnapshot(), budget);
         }
     }
@@ -109,12 +112,13 @@ public final class ReactionActionExecutor {
             boolean includeTarget = area.damage().map(ReactionAction.AreaDamageValue::includeTarget).orElse(false);
             List<LivingEntity> targets = select(execution, center, radius, includeTarget, area.includeAttacker(), limit, budget);
             for (LivingEntity target : targets) {
+                if (!execution.isCurrent()) return;
                 double distance = Math.sqrt(target.position().distanceToSqr(center));
                 runAreaParts(target == execution.target(), () -> area.damage().ifPresent(damage -> {
                     double amount = damage.formula().evaluate(context(facts, target, distance, radius,
                             damage.settings().resistanceElement()));
                     hurt(execution, target, damage.settings(), facts, amount);
-                }), () -> valid(target, execution.level()), () -> area.attachment().ifPresent(attachment -> {
+                }), () -> execution.isCurrent() && valid(target, execution.level()), () -> area.attachment().ifPresent(attachment -> {
                     double amount = attachment.amount().evaluate(context(facts, target, distance, radius));
                     applyExplicitAttachment(execution, target, resolve(attachment.element(), facts), amount, facts, budget);
                 }));
@@ -129,6 +133,7 @@ public final class ReactionActionExecutor {
             LivingEntity target = execution.target();
             if (valid(target, execution.level())) {
                 for (var entry : special.entries()) {
+                    if (!execution.isCurrent()) return;
                     if (entry.type() == ReactionAction.SpecialEntry.Kind.IGNITE) {
                         if (!target.fireImmune() && entry.durationTicks() >= Math.max(0, target.getRemainingFireTicks())) {
                             target.setRemainingFireTicks(entry.durationTicks());
@@ -158,6 +163,7 @@ public final class ReactionActionExecutor {
 
     private void applyExplicitAttachment(QueuedHitExecution execution, LivingEntity target, ResourceLocation element,
                                          double amount, ReactionFacts parentFacts, ReactionExecutionBudget budget) {
+        if (!execution.isCurrent()) return;
         var definition = execution.snapshot().elements().get(element);
         if (!valid(target, execution.level()) || definition == null || !Double.isFinite(amount) || amount < MIN_AMOUNT) return;
         double incoming = Math.min(amount, definition.attachment().maxAmount());
@@ -165,6 +171,7 @@ public final class ReactionActionExecutor {
         var source = reactionProductSource(execution, element, parentFacts);
         var attacker = valid(execution.attacker(), execution.level()) ? execution.attacker() : null;
         ElementalCapabilities.get(target).ifPresent(state -> {
+            if (!execution.isCurrent()) return;
             var admission = state.tryTriggerVirtual(element, incoming, now, definition.attachment().cooldownTicks());
             var current = state.state(element);
             if (!admission.changed() || definition.attachment().virtual() && current != null
@@ -184,26 +191,34 @@ public final class ReactionActionExecutor {
     private static ElementSourceSnapshot reactionProductSource(QueuedHitExecution execution,
                                                                 ResourceLocation element, ReactionFacts facts) {
         var source = facts.source().orElse(null);
+        var attacker = source == null
+                ? (execution.attacker() != null ? execution.attacker() : execution.source().getEntity()) : null;
         return new ElementSourceSnapshot(
-                source == null ? Optional.ofNullable(execution.attacker()).map(LivingEntity::getUUID) : source.attacker(),
+                source == null ? Optional.ofNullable(attacker).map(Entity::getUUID) : source.attacker(),
                 source == null ? Optional.ofNullable(execution.source().getDirectEntity()).map(entity -> entity.getUUID())
                         : source.directEntity(),
                 facts.reactionId(), source == null ? execution.source().typeHolder().unwrapKey()
                         .map(net.minecraft.resources.ResourceKey::location).orElse(ReactionAction.DEFAULT_DAMAGE_TYPE)
                         : source.damageType(),
-                element, source == null ? facts.elementStrength() : source.elementStrength(), execution.level().getGameTime());
+                element, source == null ? facts.elementStrength() : source.elementStrength(), execution.level().getGameTime(),
+                source == null ? (attacker instanceof Player player ? Optional.of(player.getScoreboardName()) : Optional.empty())
+                        : source.playerName());
     }
 
     private static ElementSourceSnapshot reactionActionSource(QueuedHitExecution execution, ReactionFacts facts) {
         var source = facts.source().orElse(null);
+        var attacker = source == null
+                ? (execution.attacker() != null ? execution.attacker() : execution.source().getEntity()) : null;
         return new ElementSourceSnapshot(
-                source == null ? Optional.ofNullable(execution.attacker()).map(LivingEntity::getUUID) : source.attacker(),
+                source == null ? Optional.ofNullable(attacker).map(Entity::getUUID) : source.attacker(),
                 source == null ? Optional.ofNullable(execution.source().getDirectEntity()).map(entity -> entity.getUUID())
                         : source.directEntity(),
                 facts.reactionId(), source == null ? execution.source().typeHolder().unwrapKey()
                         .map(ResourceKey::location).orElse(ReactionAction.DEFAULT_DAMAGE_TYPE) : source.damageType(),
                 source == null ? facts.direction().trigger() : source.element(),
-                source == null ? facts.elementStrength() : source.elementStrength(), execution.level().getGameTime());
+                source == null ? facts.elementStrength() : source.elementStrength(), execution.level().getGameTime(),
+                source == null ? (attacker instanceof Player player ? Optional.of(player.getScoreboardName()) : Optional.empty())
+                        : source.playerName());
     }
 
     private static void modifyElement(QueuedHitExecution execution, LivingEntity target,
@@ -211,10 +226,11 @@ public final class ReactionActionExecutor {
         ResourceLocation element = resolve(action.element(), facts);
         double amount = action.amount().map(value -> value.evaluate(context(facts, target, 0, 0))).orElse(0.0D);
         var definition = execution.snapshot().elements().get(element);
-        if (definition == null) return;
+        if (!execution.isCurrent() || definition == null) return;
         boolean createsElement = action.operation() == ReactionAction.ElementOperation.ADD
                 || action.operation() == ReactionAction.ElementOperation.SET;
         ElementalCapabilities.get(target).ifPresent(state -> {
+            if (!execution.isCurrent()) return;
             if (action.operation() == ReactionAction.ElementOperation.CLEAR) {
                 state.remove(element);
             } else {
@@ -232,7 +248,7 @@ public final class ReactionActionExecutor {
 
     private static DamageOutcome hurt(QueuedHitExecution execution, LivingEntity target,
                                 ReactionAction.DamageSettings settings, ReactionFacts facts, double rawAmount) {
-        if (!valid(target, execution.level()) || !Double.isFinite(rawAmount) || rawAmount <= 0.0D) {
+        if (!execution.isCurrent() || !valid(target, execution.level()) || !Double.isFinite(rawAmount) || rawAmount <= 0.0D) {
             return DamageOutcome.REJECTED;
         }
         double resistance = settings.resistanceElement().map(value -> resolve(value, facts))
@@ -265,7 +281,7 @@ public final class ReactionActionExecutor {
     private static List<LivingEntity> select(QueuedHitExecution execution, Vec3 center, double radius,
                                              boolean includeTarget, boolean includeAttacker,
                                              int maxTargets, ReactionExecutionBudget budget) {
-        if (maxTargets <= 0 || budget.targetOperationsRemaining() == 0) return List.of();
+        if (!execution.isCurrent() || maxTargets <= 0 || budget.targetOperationsRemaining() == 0) return List.of();
         List<LivingEntity> candidates = new ArrayList<>(execution.level().getEntitiesOfClass(LivingEntity.class,
                 new AABB(center, center).inflate(radius)));
         if (includeAttacker && execution.attacker() != null) candidates.add(execution.attacker());

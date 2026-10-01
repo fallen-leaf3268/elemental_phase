@@ -373,7 +373,6 @@ public final class ElementalState {
         root.putInt("version", 2);
         root.putLong("next_order", nextOrder);
         root.putBoolean("initialized", initialized);
-        root.putLong("generation", appliedGeneration);
         ListTag elements = new ListTag();
         states.entrySet().stream().sorted(Map.Entry.comparingByKey(Comparator.comparing(ResourceLocation::toString)))
                 .filter(entry -> !entry.getValue().virtual())
@@ -441,7 +440,6 @@ public final class ElementalState {
                 .mapToLong(Long::longValue).max().orElse(-1L);
         nextOrder = Math.max(root.getLong("next_order"), maximumOrder + 1L);
         initialized = root.getBoolean("initialized");
-        appliedGeneration = root.getLong("generation");
     }
 
     public record IntrinsicAttack(ResourceLocation element, double baseAmount) {

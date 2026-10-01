@@ -64,6 +64,61 @@ class ElementCatalogPacketTest {
     }
 
     @Test
+    void rejectsCatalogCountThatExceedsTheAvailablePacketData() {
+        var buffer = new FriendlyByteBuf(Unpooled.buffer());
+        try {
+            buffer.writeVarInt(1_000);
+            buffer.writeResourceLocation(ResourceLocation.parse("example:one"));
+            buffer.writeUtf("element.example.one");
+            assertThrows(IllegalArgumentException.class, () -> ElementCatalogPacket.decode(buffer));
+        } finally {
+            buffer.release();
+        }
+    }
+
+    @Test
+    void rejectsHugeDeclaredCountBeforeAllocatingForItsFirstEntry() {
+        var buffer = new FriendlyByteBuf(Unpooled.buffer());
+        try {
+            buffer.writeVarInt(20_000_000);
+            buffer.writeResourceLocation(ResourceLocation.parse("example:one"));
+            buffer.writeUtf("element.example.one");
+            assertThrows(IllegalArgumentException.class, () -> ElementCatalogPacket.decode(buffer));
+        } finally {
+            buffer.release();
+        }
+    }
+
+    @Test
+    void rejectsCatalogsOverTheSharedEntryBudgetBeforeSending() {
+        var elements = new HashMap<ResourceLocation, String>();
+        var colors = new HashMap<ResourceLocation, Integer>();
+        for (int index = 0; index < 8_193; index++) {
+            var id = ResourceLocation.parse("example:element_" + index);
+            elements.put(id, "element.example." + index);
+            colors.put(id, 0x7EE7C4);
+        }
+        assertThrows(IllegalArgumentException.class,
+                () -> new ElementCatalogPacket(elements, Map.of(), colors));
+    }
+
+    @Test
+    void rejectsColorsForElementsMissingFromTheCatalog() {
+        var buffer = new FriendlyByteBuf(Unpooled.buffer());
+        try {
+            buffer.writeVarInt(0);
+            buffer.writeVarInt(0);
+            buffer.writeMap(Map.of(ResourceLocation.parse("example:unknown"), 0x7EE7C4),
+                    FriendlyByteBuf::writeResourceLocation, FriendlyByteBuf::writeInt);
+            buffer.writeBoolean(false);
+            buffer.writeDouble(1.0D);
+            assertThrows(IllegalArgumentException.class, () -> ElementCatalogPacket.decode(buffer));
+        } finally {
+            buffer.release();
+        }
+    }
+
+    @Test
     void reactionNamesRefreshIndependentlyAndClearOnEmptyCatalog() {
         var id = ResourceLocation.parse("example:weather/vaporize");
         var names = new HashMap<ResourceLocation, String>();

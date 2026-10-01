@@ -18,49 +18,404 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class FrostPillarSealLayoutTest {
     @Test
-    void usesThreeEvenlySpacedPillarsAndEightyPercentCrossing() {
-        assertEquals(3, FrostShellRenderer.PILLAR_COUNT);
-        assertEquals(0.80F, FrostShellRenderer.CROSS_HEIGHT, 0.0001F);
-        float first = FrostShellRenderer.pillar(42, 0).angle();
-        float second = FrostShellRenderer.pillar(42, 1).angle();
-        float third = FrostShellRenderer.pillar(42, 2).angle();
-        assertEquals(1.0F / 3.0F, circularDistance(first, second), 0.0001F);
-        assertEquals(1.0F / 3.0F, circularDistance(second, third), 0.0001F);
-        assertEquals(1.0F / 3.0F, circularDistance(third, first), 0.0001F);
-    }
-
-    @Test
-    void derivesStableBoundedAndStaggeredPillars() {
-        var first = FrostShellRenderer.pillar(91, 0);
-        assertEquals(first, FrostShellRenderer.pillar(91, 0));
-        assertNotEquals(first, FrostShellRenderer.pillar(91, 1));
-        for (int index = 0; index < FrostShellRenderer.PILLAR_COUNT; index++) {
-            var pillar = FrostShellRenderer.pillar(91, index);
-            if (index == 0) assertRange(pillar.tipHeight(), 0.92F, 0.93F);
-            if (index == 1) assertRange(pillar.tipHeight(), 0.95F, 0.97F);
-            if (index == 2) assertRange(pillar.tipHeight(), 0.98F, 1.00F);
-            assertUnit(pillar.baseScale());
-            assertUnit(pillar.twist());
-            assertUnit(pillar.shade());
+    void collisionIceFormsExactlySixClosedFacesAroundTheHitbox() throws Exception {
+        for (var hitbox : List.of(new AABB(-0.45, 0, -0.45, 0.45, 2.9, 0.45),
+                new AABB(-0.2, 0, -0.2, 0.2, 0.7, 0.2),
+                new AABB(-2, 0.3, -1, 2, 1.1, 1))) {
+            var vertices = new RecordedVertices();
+            var original = new AABB(hitbox.minX, hitbox.minY, hitbox.minZ, hitbox.maxX, hitbox.maxY, hitbox.maxZ);
+            drawBox(hitbox, new com.mojang.blaze3d.vertex.PoseStack(), vertices, 0x00300020, 1, 1);
+            assertEquals(24, vertices.positions.size(), "One collision ice block needs six complete quads");
+            var expected = hitbox.inflate(0.04);
+            assertEquals(expected.minX, vertices.positions.stream().mapToDouble(point -> point.x).min().orElseThrow(), 0.000001);
+            assertEquals(expected.minY, vertices.positions.stream().mapToDouble(point -> point.y).min().orElseThrow(), 0.000001);
+            assertEquals(expected.minZ, vertices.positions.stream().mapToDouble(point -> point.z).min().orElseThrow(), 0.000001);
+            assertEquals(expected.maxX, vertices.positions.stream().mapToDouble(point -> point.x).max().orElseThrow(), 0.000001);
+            assertEquals(expected.maxY, vertices.positions.stream().mapToDouble(point -> point.y).max().orElseThrow(), 0.000001);
+            assertEquals(expected.maxZ, vertices.positions.stream().mapToDouble(point -> point.z).max().orElseThrow(), 0.000001);
+            assertEquals(8, new java.util.HashSet<>(vertices.positions).size(), "All six faces must share the same eight corners");
+            assertEquals(6, new java.util.HashSet<>(vertices.normals).size());
+            assertTrue(vertices.alphas.stream().allMatch(alpha -> alpha == 255));
+            assertTrue(vertices.lights.stream().allMatch(light -> light == 0x00300020), "The ice must use ambient light");
+            assertEquals(original, hitbox, "The visual shell must not change the actual collision box");
+            for (int index = 0; index < 24; index += 4) {
+                var normal = vertices.normals.get(index);
+                var a = vertices.positions.get(index);
+                var b = vertices.positions.get(index + 1);
+                var d = vertices.positions.get(index + 3);
+                assertEquals(1, normal.length(), 0.000001);
+                assertTrue(b.subtract(a).cross(d.subtract(a)).normalize().dot(normal) > 0.999,
+                        "Every face must have outward winding matching its normal");
+                assertTrue(a.subtract(expected.getCenter()).dot(normal) > 0);
+            }
         }
     }
 
-    private static float circularDistance(float first, float second) {
-        float distance = Math.abs(first - second);
-        return Math.min(distance, 1.0F - distance);
+    @Test
+    void collisionIceGrowsFromTheFeetAndThawsAsOneBlock() throws Exception {
+        var hitbox = new AABB(-0.45, 0, -0.45, 0.45, 2.9, 0.45);
+        var pose = new com.mojang.blaze3d.vertex.PoseStack();
+        var full = new RecordedVertices();
+        var half = new RecordedVertices();
+        var thawing = new RecordedVertices();
+        drawBox(hitbox, pose, full, 0, 1, 1);
+        drawBox(hitbox, pose, half, 0, 0.5F, 1);
+        drawBox(hitbox, pose, thawing, 0, 1, 0.5F);
+        assertEquals(24, half.positions.size());
+        double low = full.positions.stream().mapToDouble(point -> point.y).min().orElseThrow();
+        double high = full.positions.stream().mapToDouble(point -> point.y).max().orElseThrow();
+        assertEquals(low, half.positions.stream().mapToDouble(point -> point.y).min().orElseThrow(), 0.000001);
+        assertEquals((low + high) * 0.5, half.positions.stream().mapToDouble(point -> point.y).max().orElseThrow(), 0.000001);
+        for (int index = 0; index < 24; index++) {
+            assertEquals(full.positions.get(index).x, half.positions.get(index).x);
+            assertEquals(full.positions.get(index).z, half.positions.get(index).z);
+        }
+        assertEquals(full.positions, thawing.positions, "Thaw must fade the existing ice block without moving its faces");
+        assertTrue(thawing.alphas.stream().allMatch(alpha -> alpha == 128));
+        assertEquals(full.normals, half.normals);
     }
 
-    private static void assertUnit(float value) {
-        assertRange(value, 0.0F, 1.0F);
+    @Test
+    void collisionIceUsesTheEntityRootPoseWithoutModelRotations() throws Exception {
+        var hitbox = new AABB(-0.3, -0.2, -0.4, 0.7, 1.6, 0.5);
+        var base = new RecordedVertices();
+        drawBox(hitbox, new com.mojang.blaze3d.vertex.PoseStack(), base, 0, 1, 1);
+        var pose = new com.mojang.blaze3d.vertex.PoseStack();
+        pose.translate(123, -7, 8);
+        pose.mulPose(com.mojang.math.Axis.YP.rotationDegrees(35));
+        var before = new Matrix4f(pose.last().pose());
+        var moved = new RecordedVertices();
+        drawBox(hitbox, pose, moved, 0, 1, 1);
+        assertEquals(before, pose.last().pose(), "Rendering must preserve the caller's pose stack");
+        assertEquals(base.uvs, moved.uvs, "The ice texture must stay fixed when camera coordinates change");
+        for (int index = 0; index < 24; index++) {
+            var source = base.positions.get(index);
+            var point = before.transformPosition(new org.joml.Vector3f((float) source.x, (float) source.y, (float) source.z));
+            assertEquals(point.x(), moved.positions.get(index).x, 0.00001);
+            assertEquals(point.y(), moved.positions.get(index).y, 0.00001);
+            assertEquals(point.z(), moved.positions.get(index).z, 0.00001);
+            var normal = base.normals.get(index);
+            var expected = pose.last().normal().transform(new org.joml.Vector3f((float) normal.x, (float) normal.y, (float) normal.z));
+            assertEquals(expected.x(), moved.normals.get(index).x, 0.000001);
+            assertEquals(expected.y(), moved.normals.get(index).y, 0.000001);
+            assertEquals(expected.z(), moved.normals.get(index).z, 0.000001);
+        }
     }
 
-    private static void assertRange(float value, float minimum, float maximum) {
-        assertTrue(value >= minimum && value <= maximum,
-                () -> value + " outside " + minimum + ".." + maximum);
+    @Test
+    void collisionIceRemovesRendererOffsetsWithoutMovingTheParticleAnchors() throws Exception {
+        var hitbox = new AABB(-0.3, 0, -0.3, 0.3, 1.5, 0.3);
+        var basePose = new com.mojang.blaze3d.vertex.PoseStack();
+        basePose.translate(30, -7, 6);
+        basePose.mulPose(com.mojang.math.Axis.YP.rotationDegrees(37));
+        var baseline = new RecordedVertices();
+        var expectedAnchors = drawBox(hitbox, basePose, baseline, 0, 1, 1);
+        for (var offset : List.of(new Vec3(0, -0.125, 0), new Vec3(0.3, -0.125, 0.2))) {
+            var pose = new com.mojang.blaze3d.vertex.PoseStack();
+            pose.translate(30, -7, 6);
+            pose.mulPose(com.mojang.math.Axis.YP.rotationDegrees(37));
+            pose.translate(offset.x, offset.y, offset.z);
+            var before = new Matrix4f(pose.last().pose());
+            var corrected = new RecordedVertices();
+            var anchors = FrostShellRenderer.renderBox(hitbox, pose, corrected, 0, 1, 1, offset);
+            assertEquals(before, pose.last().pose(), "Offset correction must restore the caller's root pose");
+            assertEquals(expectedAnchors, anchors, "Particle anchors must stay relative to the actual entity position");
+            for (int index = 0; index < 24; index++) {
+                assertEquals(baseline.positions.get(index).x, corrected.positions.get(index).x, 0.00001);
+                assertEquals(baseline.positions.get(index).y, corrected.positions.get(index).y, 0.00001,
+                        "The crouching render offset must not lower the actual collision ice");
+                assertEquals(baseline.positions.get(index).z, corrected.positions.get(index).z, 0.00001);
+            }
+        }
+    }
+
+    @Test
+    void rendererOffsetCaptureKeepsTheAppliedValueAndRestoresNestedRenders() throws Exception {
+        var applied = new Vec3(0.013, -0.125, -0.007);
+        var nested = new Vec3(-0.017, 0, 0.025);
+        FrozenReactionRenderer.beginRender(null);
+        try {
+            assertEquals(Vec3.ZERO, FrozenReactionRenderer.renderOffset(null));
+            org.junit.jupiter.api.Assertions.assertSame(applied, FrozenReactionRenderer.captureRenderOffset(applied, null));
+            org.junit.jupiter.api.Assertions.assertSame(applied, FrozenReactionRenderer.renderOffset(null),
+                    "The ice must reuse the exact offset already applied by the dispatcher");
+            FrozenReactionRenderer.beginRender(null);
+            try {
+                FrozenReactionRenderer.captureRenderOffset(nested, null);
+                org.junit.jupiter.api.Assertions.assertSame(nested, FrozenReactionRenderer.renderOffset(null));
+            } finally {
+                FrozenReactionRenderer.endRender(null);
+            }
+            org.junit.jupiter.api.Assertions.assertSame(applied, FrozenReactionRenderer.renderOffset(null),
+                    "A nested render must restore the parent's applied offset");
+        } finally {
+            FrozenReactionRenderer.endRender(null);
+        }
+        assertEquals(Vec3.ZERO, FrozenReactionRenderer.renderOffset(null), "Offset capture must be cleared when rendering ends");
+        FrozenReactionRenderer.endRender(null);
+    }
+
+    @Test
+    void collisionIceTextureRepeatsAtBlockScaleWithoutStretchingDuringGrowth() throws Exception {
+        var hitbox = new AABB(-0.45, 0, -0.45, 0.45, 2.9, 0.45);
+        for (float growth : new float[]{0.25F, 1}) {
+            var vertices = new RecordedVertices();
+            drawBox(hitbox, new com.mojang.blaze3d.vertex.PoseStack(), vertices, 0, growth, 1);
+            for (int index = 0; index < 24; index += 4) {
+                var a = vertices.positions.get(index);
+                var b = vertices.positions.get(index + 1);
+                var d = vertices.positions.get(index + 3);
+                var uv = vertices.uvs.get(index);
+                assertEquals(a.distanceTo(b), uv.distanceTo(vertices.uvs.get(index + 1)), 0.000001);
+                assertEquals(a.distanceTo(d), uv.distanceTo(vertices.uvs.get(index + 3)), 0.000001);
+            }
+        }
+    }
+
+    @Test
+    void collisionIceRejectsInvalidBoundsAndInvisibleAnimationStates() throws Exception {
+        var pose = new com.mojang.blaze3d.vertex.PoseStack();
+        for (var hitbox : List.of(new AABB(0, 0, 0, 0, 1, 1), new AABB(0, 0, 0, 1, 0, 1),
+                new AABB(0, 0, 0, 1, 1, 0), new AABB(Double.NaN, 0, 0, 1, 1, 1),
+                new AABB(0, 0, 0, Double.POSITIVE_INFINITY, 1, 1))) {
+            var vertices = new RecordedVertices();
+            assertTrue(drawBox(hitbox, pose, vertices, 0, 1, 1).isEmpty());
+            assertTrue(vertices.positions.isEmpty());
+        }
+        var hitbox = new AABB(-0.45, 0, -0.45, 0.45, 2.9, 0.45);
+        for (float[] animation : List.of(new float[]{0, 1}, new float[]{1, 0}, new float[]{1, 0.001F},
+                new float[]{-1, 1}, new float[]{1, -1}, new float[]{Float.NaN, 1},
+                new float[]{1, Float.NaN}, new float[]{Float.POSITIVE_INFINITY, 1})) {
+            var vertices = new RecordedVertices();
+            assertTrue(drawBox(hitbox, pose, vertices, 0, animation[0], animation[1]).isEmpty());
+            assertTrue(vertices.positions.isEmpty());
+        }
+        var tiny = new RecordedVertices();
+        drawBox(hitbox, pose, tiny, 0, 0.0000001F, 0.5F);
+        assertTrue(tiny.normals.stream().allMatch(normal -> Double.isFinite(normal.x)
+                && Double.isFinite(normal.y) && Double.isFinite(normal.z)));
+    }
+
+    @Test
+    void collisionIceClampsAnimationAndDoesNotShareGeometryBetweenEntities() throws Exception {
+        var pose = new com.mojang.blaze3d.vertex.PoseStack();
+        var hitbox = new AABB(-0.45, 0, -0.45, 0.45, 2.9, 0.45);
+        var full = new RecordedVertices();
+        var excess = new RecordedVertices();
+        drawBox(hitbox, pose, full, 0, 1, 1);
+        drawBox(hitbox, pose, excess, 0, 2, 2);
+        assertEquals(full.positions, excess.positions);
+        assertEquals(full.alphas, excess.alphas);
+        var other = new RecordedVertices();
+        drawBox(new AABB(-3, 0, -3, 3, 1, 3), pose, other, 0, 1, 1);
+        var repeated = new RecordedVertices();
+        drawBox(hitbox, pose, repeated, 0, 1, 1);
+        assertEquals(full.positions, repeated.positions, "Another entity's size must not alter the first entity's block");
+    }
+
+    @Test
+    void particleAnchorsStayOnTheCollisionIceSurfaceAtEveryGrowthStage() throws Exception {
+        var hitbox = new AABB(-0.45, 0, -0.45, 0.45, 2.9, 0.45);
+        for (float growth : new float[]{0.25F, 1}) {
+            var vertices = new RecordedVertices();
+            var anchors = drawBox(hitbox, new com.mojang.blaze3d.vertex.PoseStack(), vertices, 0, growth, 1);
+            assertEquals(6, anchors.size());
+            double minY = vertices.positions.stream().mapToDouble(point -> point.y).min().orElseThrow();
+            double maxY = vertices.positions.stream().mapToDouble(point -> point.y).max().orElseThrow();
+            var expanded = hitbox.inflate(0.04);
+            for (var point : anchors) {
+                assertTrue(Float.isFinite(point.x()) && Float.isFinite(point.y()) && Float.isFinite(point.z()));
+                assertTrue(point.y() >= minY - 0.000001 && point.y() <= maxY + 0.000001);
+                assertTrue(point.x() >= expanded.minX - 0.000001 && point.x() <= expanded.maxX + 0.000001);
+                assertTrue(point.z() >= expanded.minZ - 0.000001 && point.z() <= expanded.maxZ + 0.000001);
+                assertTrue(Math.abs(point.x() - expanded.minX) < 0.000001 || Math.abs(point.x() - expanded.maxX) < 0.000001
+                        || Math.abs(point.z() - expanded.minZ) < 0.000001 || Math.abs(point.z() - expanded.maxZ) < 0.000001,
+                        "Cold mist and thaw particles must originate on the actual ice block");
+            }
+        }
+    }
+
+    @Test
+    void freezeAppearsFullyOnTheFirstFrameAndThawsWithoutRestrictingMovement() throws Exception {
+        var state = new ClientFrozenStateManager.ClientFrozenState(100, 20, 120);
+        var vertices = new RecordedVertices();
+        drawBox(new AABB(-0.45, 0, -0.45, 0.45, 2.9, 0.45),
+                new com.mojang.blaze3d.vertex.PoseStack(), vertices, 0, state.growth(20), state.opacity(20));
+        assertEquals(24, vertices.positions.size(), "The first frozen frame must already contain the complete ice block");
+        assertEquals(2.94, vertices.positions.stream().mapToDouble(point -> point.y).max().orElseThrow(), 0.000001);
+        assertEquals(1, state.growth(20), 0.0001);
+        assertEquals(1, state.growth(20.1), 0.0001);
+        assertEquals(1, state.growth(26), 0.0001);
+        assertEquals(1, state.opacity(120), 0.0001);
+        assertTrue(state.opacity(123) > 0 && state.opacity(123) < 1);
+        var movement = new Vec3(0.3, -0.8, -0.6);
+        org.junit.jupiter.api.Assertions.assertSame(movement, state.constrainMovement(movement, 123));
+        assertEquals(0, state.opacity(125), 0.0001);
+    }
+
+    @Test
+    void stopPacketReleasesMovementImmediatelyButKeepsBriefThawVisuals() {
+        var manager = ClientFrozenStateManager.INSTANCE;
+        manager.clear();
+        try {
+            manager.start(7, 100, 100, 20);
+            manager.stop(7, 35);
+            var state = manager.state(7, 35);
+            org.junit.jupiter.api.Assertions.assertNotNull(state);
+            assertFalse(state.active(35));
+            assertTrue(state.visible(35));
+            var movement = new Vec3(0.3, -0.8, -0.6);
+            org.junit.jupiter.api.Assertions.assertSame(movement, state.constrainMovement(movement, 35));
+            manager.stop(7, 37);
+            assertEquals(state.expiresAt(), manager.state(7, 37).expiresAt(), "Repeated stop packets must not extend the visual tail");
+            org.junit.jupiter.api.Assertions.assertNull(manager.state(7, 40));
+        } finally {
+            manager.clear();
+        }
+    }
+
+    @Test
+    void particleTimingIsIndependentOfRenderFrequencyAndThawOnlyBurstsOnce() {
+        var clock = new FrozenReactionRenderer.ParticleClock();
+        var state = new ClientFrozenStateManager.ClientFrozenState(100, 20, 120);
+        int starts = 0, mists = 0, thaws = 0;
+        for (long now = 20; now <= 130; now++) {
+            int events = clock.step(state, now);
+            if ((events & 1) != 0) starts++;
+            if ((events & 2) != 0) mists++;
+            if ((events & 4) != 0) thaws++;
+            for (int frame = 0; frame < 10; frame++) assertEquals(0, clock.step(state, now));
+        }
+        assertEquals(0, starts, "Freeze creation must not emit particles");
+        assertEquals(0, mists, "Frozen entities must not continuously emit particles");
+        assertEquals(1, thaws);
+    }
+
+    @Test
+    void continuousFreezeRefreshKeepsTheVisualStartAndOnlyExtendsTheDeadline() {
+        var manager = ClientFrozenStateManager.INSTANCE;
+        manager.clear();
+        try {
+            for (long now = 20; now <= 32; now += 2) {
+                manager.start(7, 100, 100, now);
+                var state = manager.state(7, now);
+                assertEquals(20, state.startedAt(), "Refreshing an active freeze must preserve the same visual cycle");
+                assertEquals(now + 100, state.expiresAt());
+            }
+            assertEquals(1, manager.state(7, 32).growth(32), 0.0001);
+            manager.stop(7, 35);
+            manager.start(7, 100, 100, 37);
+            assertEquals(37, manager.state(7, 37).startedAt(), "A new freeze after thaw must start a new visual cycle");
+            assertEquals(1, manager.state(7, 37).growth(37), 0.0001,
+                    "A new freeze must also appear fully on its first frame");
+        } finally {
+            manager.clear();
+        }
+    }
+
+    @Test
+    void particleAnchorsAreClearedOnWorldChangeAndLogout() throws Exception {
+        var field = FrozenReactionRenderer.class.getDeclaredField("VISUALS");
+        field.setAccessible(true);
+        var visuals = (java.util.Map<?, ?>) field.get(null);
+        var manager = ClientFrozenStateManager.INSTANCE;
+        manager.updateWorldToken(new Object());
+        var points = List.of(new FrostShellRenderer.Point(0, 1, 0));
+        FrozenReactionRenderer.observe(7, new java.util.UUID(1, 7), 20, 20, points);
+        assertEquals(1, visuals.size());
+        manager.updateWorldToken(new Object());
+        assertTrue(visuals.isEmpty());
+        FrozenReactionRenderer.observe(7, new java.util.UUID(1, 7), 20, 20, points);
+        ClientDamagePopupRenderer.logout(null);
+        assertTrue(visuals.isEmpty());
+        manager.updateWorldToken(null);
+    }
+
+    private static List<FrostShellRenderer.Point> drawBox(AABB hitbox, com.mojang.blaze3d.vertex.PoseStack pose,
+            RecordedVertices vertices, int light, float growth, float opacity) throws Exception {
+        return FrostShellRenderer.renderBox(hitbox, pose, vertices, light, growth, opacity, Vec3.ZERO);
+    }
+
+    private static final class RecordedVertices implements com.mojang.blaze3d.vertex.VertexConsumer {
+        private final List<Vec3> positions = new ArrayList<>();
+        private final List<Integer> alphas = new ArrayList<>();
+        private final List<Vec3> normals = new ArrayList<>();
+        private final List<Vec3> colours = new ArrayList<>();
+        private final List<Integer> lights = new ArrayList<>();
+        private final List<Vec3> uvs = new ArrayList<>();
+        private Vec3 position;
+        private Vec3 normal = Vec3.ZERO;
+        private int alpha = 255;
+        private Vec3 colour = new Vec3(255, 255, 255);
+        private int light;
+        private Vec3 uv = Vec3.ZERO;
+
+        @Override public com.mojang.blaze3d.vertex.VertexConsumer vertex(double x, double y, double z) {
+            position = new Vec3(x, y, z);
+            return this;
+        }
+        @Override public com.mojang.blaze3d.vertex.VertexConsumer color(int r, int g, int b, int a) {
+            alpha = a; colour = new Vec3(r, g, b); return this;
+        }
+        @Override public com.mojang.blaze3d.vertex.VertexConsumer uv(float u, float v) { uv = new Vec3(u, v, 0); return this; }
+        @Override public com.mojang.blaze3d.vertex.VertexConsumer overlayCoords(int u, int v) { return this; }
+        @Override public com.mojang.blaze3d.vertex.VertexConsumer uv2(int u, int v) { light = u | v << 16; return this; }
+        @Override public com.mojang.blaze3d.vertex.VertexConsumer normal(float x, float y, float z) {
+            normal = new Vec3(x, y, z); return this;
+        }
+        @Override public void endVertex() {
+            positions.add(position); alphas.add(alpha); normals.add(normal); colours.add(colour); lights.add(light); uvs.add(uv); alpha = 255;
+        }
+        @Override public void defaultColor(int r, int g, int b, int a) { alpha = a; }
+        @Override public void unsetDefaultColor() { alpha = 255; }
     }
 }
 
 class DamagePopupManagerTest {
+    @Test
+    void visualGracePeriodDoesNotExtendTheMovementRestriction() {
+        var state = new ClientFrozenStateManager.ClientFrozenState(20, 100, 120);
+        var movement = new Vec3(0.3, -0.8, -0.6);
+        assertEquals(new Vec3(0, -0.8, 0), state.constrainMovement(movement, 120));
+        assertTrue(state.visible(121));
+        assertFalse(state.active(121));
+        org.junit.jupiter.api.Assertions.assertSame(movement, state.constrainMovement(movement, 121));
+        assertFalse(state.visible(126));
+    }
+
+    @Test
+    void resourceReloadPreservesFreezeWhileLogoutAndWorldChangesClearIt() throws Exception {
+        var frozen = ClientFrozenStateManager.INSTANCE;
+        var world = new Object();
+        frozen.updateWorldToken(world);
+        var field = ClientFrozenStateManager.class.getDeclaredField("states");
+        field.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        var states = (it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap<ClientFrozenStateManager.ClientFrozenState>)
+                field.get(frozen);
+        var state = new ClientFrozenStateManager.ClientFrozenState(100, 0, 100);
+        states.put(7, state);
+        try (var resources = new net.minecraft.server.packs.resources.ReloadableResourceManager(
+                net.minecraft.server.packs.PackType.CLIENT_RESOURCES)) {
+            ClientDamagePopupRenderer.ClientModEvents.registerReloadListeners(
+                    new net.minecraftforge.client.event.RegisterClientReloadListenersEvent(resources));
+            resources.createReload(Runnable::run, Runnable::run,
+                    java.util.concurrent.CompletableFuture.completedFuture(net.minecraft.util.Unit.INSTANCE),
+                    List.of()).done().join();
+            org.junit.jupiter.api.Assertions.assertSame(state, frozen.state(7, 50));
+            frozen.updateWorldToken(world);
+            org.junit.jupiter.api.Assertions.assertSame(state, frozen.state(7, 50));
+            frozen.updateWorldToken(new Object());
+            org.junit.jupiter.api.Assertions.assertNull(frozen.state(7, 50));
+            states.put(7, state);
+            ClientDamagePopupRenderer.logout(null);
+            org.junit.jupiter.api.Assertions.assertNull(frozen.state(7, 50));
+        } finally {
+            frozen.updateWorldToken(null);
+            frozen.clear();
+        }
+    }
+
     @Test
     void spawnRegionStaysFixedWhenTheEntityLimitChanges() {
         var latestSpawnPositions = new ArrayList<List<Double>>();

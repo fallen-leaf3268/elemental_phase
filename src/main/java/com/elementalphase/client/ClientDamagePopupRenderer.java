@@ -219,7 +219,6 @@ public final class ClientDamagePopupRenderer {
         @SubscribeEvent
         public static void registerReloadListeners(RegisterClientReloadListenersEvent event) {
             event.registerReloadListener((ResourceManagerReloadListener) manager -> {
-                ClientFrozenStateManager.INSTANCE.clear();
                 DamagePopupManager.INSTANCE.clear();
                 OCCLUSION_CACHE.clear();
                 lastOcclusionCleanup = Double.NEGATIVE_INFINITY;

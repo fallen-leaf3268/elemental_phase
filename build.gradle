@@ -37,6 +37,20 @@ minecraft {
             args '--nogui'
         }
 
+        if (project.hasProperty('runtimeVerificationDir')) {
+            gameTestServer {
+                workingDirectory project.file(project.property('runtimeVerificationDir'))
+                property 'forge.enabledGameTestNamespaces', mod_id
+                jvmArgs '-Xmx2G', '-XX:-UsePerfData'
+                args '--nogui', '--world', 'elemental_phase_runtime_verify'
+                mods {
+                    "${mod_id}" {
+                        source sourceSets.test
+                    }
+                }
+            }
+        }
+
         data {
             workingDirectory project.file('run-data')
             args '--mod', mod_id, '--all', '--output', file('src/generated/resources/'), '--existing', file('src/main/resources/')
@@ -93,6 +107,23 @@ mixin {
 
 tasks.named('test', Test).configure {
     useJUnitPlatform()
+}
+
+if (project.hasProperty('runtimeVerificationDir')) {
+    tasks.register('prepareRuntimeVerification') {
+        doLast {
+            def structuresDirectory = file("${project.property('runtimeVerificationDir')}/gameteststructures")
+            structuresDirectory.mkdirs()
+            new File(structuresDirectory, 'empty.snbt').setText('{DataVersion:3465,size:[16,8,16],palette:[{Name:"minecraft:air"}],blocks:[],entities:[]}', 'UTF-8')
+            def propertiesFile = file("${project.property('runtimeVerificationDir')}/server.properties")
+            if (!propertiesFile.exists()) {
+                propertiesFile.setText('level-type=minecraft\\:flat\ngenerator-settings={"biome":"minecraft:plains","layers":[{"block":"minecraft:bedrock","height":1},{"block":"minecraft:dirt","height":2},{"block":"minecraft:grass_block","height":1}],"lakes":false,"features":false}\ngenerate-structures=false\nspawn-monsters=false\nspawn-animals=false\nonline-mode=false\nserver-ip=127.0.0.1\nserver-port=0\nview-distance=2\nsimulation-distance=2\n', 'UTF-8')
+            }
+        }
+    }
+    tasks.matching { it.name == 'runGameTestServer' }.configureEach {
+        dependsOn 'testClasses', 'prepareRuntimeVerification'
+    }
 }
 
 tasks.withType(JavaCompile).configureEach {

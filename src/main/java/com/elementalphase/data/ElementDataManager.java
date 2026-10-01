@@ -25,9 +25,10 @@ public final class ElementDataManager {
     }
 
     public static synchronized ElementDataParser.ParseReport replace(ElementDataSnapshot next, RegistryAccess registries) {
-        baseSnapshot = Objects.requireNonNull(next, "next");
+        Objects.requireNonNull(next, "next");
         ElementDataParser.ParseReport report = ElementDataRuntimeValidator.validate(
-                new ElementDataParser.ParseReport(KubeJsHooks.apply(baseSnapshot), java.util.List.of()), registries);
+                new ElementDataParser.ParseReport(KubeJsHooks.apply(next), java.util.List.of()), registries);
+        baseSnapshot = next;
         snapshot = report.snapshot();
         generation++;
         return report;

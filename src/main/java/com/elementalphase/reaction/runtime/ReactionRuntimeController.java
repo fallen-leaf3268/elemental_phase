@@ -1,6 +1,7 @@
 package com.elementalphase.reaction.runtime;
 
 import com.elementalphase.data.model.ReactionAction;
+import com.elementalphase.client.ClientFrozenStateManager;
 import com.elementalphase.network.FrozenStateSyncPacket;
 import com.elementalphase.network.ModNetwork;
 import com.elementalphase.state.ElementSourceSnapshot;
@@ -13,6 +14,9 @@ import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.ai.attributes.AttributeInstance;
 import net.minecraft.world.entity.ai.attributes.AttributeModifier;
 import net.minecraft.world.entity.ai.attributes.Attributes;
+import net.minecraft.world.phys.Vec3;
+import net.minecraftforge.api.distmarker.Dist;
+import net.minecraftforge.fml.DistExecutor;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -33,9 +37,28 @@ public final class ReactionRuntimeController {
     }
 
     public boolean isFrozen(ServerLevel level, LivingEntity target, long now) {
+        FrozenReactionState freeze = frozenState(level, target);
+        return freeze != null && freeze.active(now);
+    }
+
+    private FrozenReactionState frozenState(ServerLevel level, LivingEntity target) {
         Map<UUID, EntityRuntime> entries = active.get(level);
         EntityRuntime runtime = entries == null || target == null ? null : entries.get(target.getUUID());
-        return runtime != null && runtime.freeze() != null && runtime.freeze().active(now);
+        return runtime == null ? null : runtime.freeze();
+    }
+
+    public static Vec3 constrainMovement(Entity entity, Vec3 movement) {
+        if (!(entity instanceof LivingEntity target)) return movement;
+        if (target.level() instanceof ServerLevel level) {
+            FrozenReactionState freeze = INSTANCE.frozenState(level, target);
+            return freeze == null ? movement : freeze.constrainMovement(movement, level.getGameTime());
+        }
+        if (target.level().isClientSide()) {
+            Vec3 constrained = DistExecutor.unsafeCallWhenOn(Dist.CLIENT,
+                    () -> () -> ClientFrozenStateManager.INSTANCE.constrainMovement(target, movement));
+            return constrained == null ? movement : constrained;
+        }
+        return movement;
     }
 
     public void applyFreeze(ServerLevel level, LivingEntity target, int durationTicks, long now) {
@@ -58,9 +81,10 @@ public final class ReactionRuntimeController {
         if (!valid(level, target)) return;
         EntityRuntime runtime = runtime(level, target);
         var incoming = ScheduledDamageState.create(taskId, reactionId, scale, now, durationTicks, intervalTicks, damage, source, snapshot);
-        applyScheduled(runtime, incoming, state -> ScheduledReactionDamageExecutor.execute(level, target, state),
-                () -> valid(level, target));
-        if (!valid(level, target)) remove(target);
+        applyScheduled(runtime, incoming, state -> {
+            ScheduledReactionDamageExecutor.execute(level, target, state);
+            if (!valid(level, target)) remove(target);
+        }, () -> valid(level, target));
     }
 
     static ScheduledDamageState.ApplyResult applyScheduled(EntityRuntime runtime, ScheduledDamageState incoming,
@@ -86,12 +110,21 @@ public final class ReactionRuntimeController {
         Map<UUID, EntityRuntime> entries = active.get(level);
         if (entries == null) return;
         for (UUID id : List.copyOf(entries.keySet())) {
+            if (active.get(level) != entries) return;
+            EntityRuntime runtime = entries.get(id);
+            if (runtime == null) continue;
             Entity raw = level.getEntity(id);
-            if (!(raw instanceof LivingEntity target) || !valid(level, target)) {
-                entries.remove(id);
+            if (!(raw instanceof LivingEntity target)) {
+                entries.remove(id, runtime);
                 continue;
             }
-            EntityRuntime runtime = entries.get(id);
+            if (!valid(level, target)) {
+                if (entries.remove(id, runtime)) {
+                    removeFreezeMovement(target);
+                    if (runtime.freeze() != null) sendClear(target);
+                }
+                continue;
+            }
             if (runtime.freeze() != null) {
                 if (runtime.freeze().active(now)) {
                     applyFreezeMovement(target);
@@ -103,19 +136,23 @@ public final class ReactionRuntimeController {
                 }
             }
             for (var entry : runtime.tasksInOrder()) {
-                if (!valid(level, target)) break;
+                if (active.get(level) != entries || !valid(level, target) || entries.get(id) != runtime) break;
                 executeIfDue(level, target, runtime, entry.getKey(), entry.getValue(), now);
             }
+            if (active.get(level) != entries) return;
+            if (entries.get(id) != runtime) continue;
             runtime.removeExpiredTasks(now);
             if (!valid(level, target)) {
-                removeFreezeMovement(target);
-                entries.remove(id);
+                if (entries.remove(id, runtime)) {
+                    removeFreezeMovement(target);
+                    if (runtime.freeze() != null) sendClear(target);
+                }
             } else if (!runtime.retainAt(now)) {
                 removeFreezeMovement(target);
-                entries.remove(id);
+                entries.remove(id, runtime);
             }
         }
-        if (entries.isEmpty()) active.remove(level);
+        if (entries.isEmpty() && active.get(level) == entries) active.remove(level);
     }
 
     public void syncTo(ServerPlayer player, LivingEntity target) {

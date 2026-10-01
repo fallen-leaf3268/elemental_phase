@@ -1,5 +1,7 @@
 package com.elementalphase.reaction.runtime;
 
+import net.minecraft.world.phys.Vec3;
+
 public record FrozenReactionState(long startedAt, long expiresAt, int durationTicks) {
     public FrozenReactionState {
         if (durationTicks < 1) throw new IllegalArgumentException("Invalid freeze duration");
@@ -18,6 +20,10 @@ public record FrozenReactionState(long startedAt, long expiresAt, int durationTi
 
     public boolean active(long now) {
         return now >= startedAt && now <= expiresAt;
+    }
+
+    public Vec3 constrainMovement(Vec3 movement, long now) {
+        return active(now) ? new Vec3(0.0D, movement.y, 0.0D) : movement;
     }
 
     public int remainingTicks(long now) {

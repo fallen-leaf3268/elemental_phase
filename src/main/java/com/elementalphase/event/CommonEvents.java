@@ -42,7 +42,6 @@ import net.minecraftforge.event.AttachCapabilitiesEvent;
 import net.minecraftforge.event.TagsUpdatedEvent;
 import net.minecraftforge.event.entity.EntityJoinLevelEvent;
 import net.minecraftforge.event.entity.EntityLeaveLevelEvent;
-import net.minecraftforge.event.entity.living.LivingDeathEvent;
 import net.minecraftforge.event.entity.living.LivingDamageEvent;
 import net.minecraftforge.event.entity.player.ArrowLooseEvent;
 import net.minecraftforge.event.entity.player.PlayerEvent;
@@ -173,8 +172,10 @@ public final class CommonEvents {
             return;
         }
         ReactionRuntimeController.INSTANCE.remove(event.getEntity());
-        ElementalCapabilities.get(event.getEntity()).ifPresent(state ->
-                PROFILE_RESOLVER.apply(event.getEntity(), state, ElementDataManager.snapshot()));
+        ElementalCapabilities.get(event.getEntity()).ifPresent(state -> {
+            state.clear();
+            PROFILE_RESOLVER.apply(event.getEntity(), state, ElementDataManager.snapshot());
+        });
     }
 
     @SubscribeEvent
@@ -198,11 +199,6 @@ public final class CommonEvents {
             ReactionRuntimeController.INSTANCE.remove(living);
             ElementalCapabilities.get(living).ifPresent(state -> state.clearVirtualElements());
         }
-    }
-
-    @SubscribeEvent
-    public static void removeDeadReactionRuntimeEntity(LivingDeathEvent event) {
-        if (!event.getEntity().level().isClientSide()) ReactionRuntimeController.INSTANCE.remove(event.getEntity());
     }
 
     @SubscribeEvent
@@ -239,7 +235,8 @@ public final class CommonEvents {
             ElementSourceSnapshot sourceSnapshot = new ElementSourceSnapshot(
                     Optional.ofNullable(source.getEntity()).map(Entity::getUUID),
                     Optional.ofNullable(direct).map(Entity::getUUID), attack.sourceId(), damageType,
-                    attack.element(), attack.elementStrength(), target.level().getGameTime());
+                    attack.element(), attack.elementStrength(), target.level().getGameTime(),
+                    source.getEntity() instanceof Player player ? Optional.of(player.getScoreboardName()) : Optional.empty());
             if (ReactionDamageContext.current().isPresent() && !ReactionDamageContext.allowsReactions()) {
                 state.applyElement(element, attack.mountAmount(), target.level().getGameTime(),
                         element.attachment().durationTicks(), true, sourceSnapshot);
@@ -308,6 +305,7 @@ public final class CommonEvents {
         }
         var report = ElementDataRuntimeValidator.validate(staged, server.registryAccess());
         var overlayReport = ElementDataManager.replace(report.snapshot(), server.registryAccess());
+        REACTION_SCHEDULER.clear();
         for (var level : server.getAllLevels()) {
             for (var entity : level.getAllEntities()) {
                 if (entity instanceof LivingEntity living) {

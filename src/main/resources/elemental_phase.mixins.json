@@ -7,10 +7,12 @@
   "mixins": [
     "AnvilMenuMixin",
     "CrossbowItemMixin",
-    "LivingEntityMixin"
+    "LivingEntityMixin",
+    "EntityMovementMixin"
   ],
   "client": [
-    "CreativeModeTabsAccessor"
+    "CreativeModeTabsAccessor",
+    "FrozenRenderOffsetMixin"
   ],
   "injectors": {
     "defaultRequire": 1
